@@ -32,17 +32,16 @@ jobs:
           ref: ${{ env.SOURCE_SHA }}
           fetch-depth: 2
 
-      - uses: dorny/paths-filter@v3
+      - name: Detect changed paths
         id: filter
-        with:
-          base: HEAD~1
-          filters: |
-            ui:
-              - 'src/ui/**'
-            host:
-              - 'src/host/**'
-            ai:
-              - 'src/ai/**'
+        shell: bash
+        run: |
+          CHANGED=$(git diff --name-only HEAD~1 HEAD || echo "")
+          echo "ui=$(echo "$CHANGED" | grep -q '^src/ui/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "host=$(echo "$CHANGED" | grep -q '^src/host/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "ai=$(echo "$CHANGED" | grep -q '^src/ai/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "Changed files:"
+          echo "$CHANGED"
 
       - name: Report pending status
         uses: actions/github-script@v7
