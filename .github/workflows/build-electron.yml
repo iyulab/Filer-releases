@@ -1,0 +1,69 @@
+name: Electron Build
+
+# No untrusted user input is used in run: blocks.
+# All inputs come from workflow_call (caller-controlled).
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        required: true
+        type: string
+      platform-flag:
+        required: true
+        type: string
+      source-ref:
+        required: false
+        type: string
+        default: ''
+    secrets:
+      RELEASE_TOKEN:
+        required: true
+      AI_CONNECTION_STRING:
+        required: false
+
+jobs:
+  build:
+    name: Package Electron
+    runs-on: ${{ inputs.os }}
+    defaults:
+      run:
+        working-directory: src/ui
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: iyulab/Filer
+          token: ${{ secrets.RELEASE_TOKEN }}
+          ref: ${{ inputs.source-ref || '' }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/ui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+        env:
+          MAIN_VITE_AI_CONNECTION_STRING: ${{ secrets.AI_CONNECTION_STRING }}
+
+      - name: Package with electron-builder (dir target)
+        run: npx electron-builder ${{ inputs.platform-flag }} --publish never
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Upload Electron unpacked
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-dist-${{ inputs.os == 'windows-latest' && 'win' || 'mac' }}
+          path: src/ui/dist/win-unpacked/
+          retention-days: 1

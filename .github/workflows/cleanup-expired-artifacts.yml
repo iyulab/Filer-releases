@@ -1,0 +1,46 @@
+name: Cleanup Expired Artifacts
+
+# No user-supplied input is used in this workflow.
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete expired artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let totalDeleted = 0;
+            let totalFreedBytes = 0;
+            const artifacts = await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 }
+            );
+            const expired = artifacts.filter(a => a.expired);
+            if (expired.length === 0) {
+              core.info('No expired artifacts found');
+              return;
+            }
+            core.info('Found ' + expired.length + ' expired artifacts');
+            for (const artifact of expired) {
+              try {
+                await github.rest.actions.deleteArtifact({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  artifact_id: artifact.id,
+                });
+                totalDeleted++;
+                totalFreedBytes += artifact.size_in_bytes;
+              } catch (err) {
+                core.warning('Failed to delete ' + artifact.name + ': ' + err.message);
+              }
+            }
+            core.info('Deleted ' + totalDeleted + ' artifacts, freed ' + (totalFreedBytes / 1048576).toFixed(1) + ' MB');

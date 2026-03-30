@@ -1,0 +1,154 @@
+name: CI
+
+on:
+  repository_dispatch:
+    types: [ci]
+
+permissions:
+  contents: read
+
+# Expose dispatch payload as workflow-level env so jobs can reference safely
+env:
+  SOURCE_SHA: ${{ github.event.client_payload.sha }}
+  SOURCE_REF: ${{ github.event.client_payload.ref }}
+  SOURCE_EVENT: ${{ github.event.client_payload.event }}
+
+jobs:
+  # --- Detect which components changed ---
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      ui: ${{ steps.filter.outputs.ui }}
+      host: ${{ steps.filter.outputs.host }}
+      ai: ${{ steps.filter.outputs.ai }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: iyulab/Filer
+          token: ${{ secrets.RELEASE_TOKEN }}
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 2
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            ui:
+              - 'src/ui/**'
+            host:
+              - 'src/host/**'
+            ai:
+              - 'src/ai/**'
+
+      - name: Report pending status
+        uses: actions/github-script@v7
+        env:
+          COMMIT_SHA: ${{ env.SOURCE_SHA }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          github-token: ${{ secrets.RELEASE_TOKEN }}
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: 'iyulab', repo: 'Filer',
+              sha: process.env.COMMIT_SHA,
+              state: 'pending',
+              target_url: process.env.RUN_URL,
+              context: 'CI (Filer-releases)',
+              description: 'CI running...'
+            });
+
+  # --- UI: lint + typecheck + test ---
+  ui:
+    name: filer-ui
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/ui
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: iyulab/Filer
+          token: ${{ secrets.RELEASE_TOKEN }}
+          ref: ${{ env.SOURCE_SHA }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/ui/package-lock.json
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+
+  # --- Host: build + test ---
+  host:
+    name: filer-host
+    needs: changes
+    if: needs.changes.outputs.host == 'true'
+    uses: ./.github/workflows/build-dotnet.yml
+    secrets: inherit
+    with:
+      solution: FilerAI.Host.slnx
+      working-directory: src/host
+      test-filter: "FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack&FullyQualifiedName!~FilerAI.Mcp.Tests&Platform!=Windows"
+      source-ref: ${{ github.event.client_payload.sha }}
+
+  # --- AI: build + test ---
+  ai:
+    name: filer-ai
+    needs: changes
+    if: needs.changes.outputs.ai == 'true'
+    uses: ./.github/workflows/build-dotnet.yml
+    secrets: inherit
+    with:
+      solution: FilerAI.slnx
+      working-directory: src/ai
+      test-filter: "FullyQualifiedName!~Integration&FullyQualifiedName!~Live&FullyQualifiedName!~OopsInstaller&FullyQualifiedName!~InstallOops_BinaryAvailable"
+      source-ref: ${{ github.event.client_payload.sha }}
+
+  # --- Report final status back to Filer repo ---
+  report:
+    name: Report status
+    needs: [changes, ui, host, ai]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine result
+        id: result
+        shell: bash
+        run: |
+          if [[ "${{ needs.ui.result }}" == "failure" ]] || \
+             [[ "${{ needs.host.result }}" == "failure" ]] || \
+             [[ "${{ needs.ai.result }}" == "failure" ]]; then
+            echo "state=failure" >> "$GITHUB_OUTPUT"
+            echo "description=CI failed" >> "$GITHUB_OUTPUT"
+          else
+            echo "state=success" >> "$GITHUB_OUTPUT"
+            echo "description=CI passed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update commit status
+        uses: actions/github-script@v7
+        env:
+          COMMIT_SHA: ${{ env.SOURCE_SHA }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESULT_STATE: ${{ steps.result.outputs.state }}
+          RESULT_DESC: ${{ steps.result.outputs.description }}
+        with:
+          github-token: ${{ secrets.RELEASE_TOKEN }}
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: 'iyulab', repo: 'Filer',
+              sha: process.env.COMMIT_SHA,
+              state: process.env.RESULT_STATE,
+              target_url: process.env.RUN_URL,
+              context: 'CI (Filer-releases)',
+              description: process.env.RESULT_DESC
+            });

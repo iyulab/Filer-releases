@@ -1,0 +1,92 @@
+name: .NET Build
+
+on:
+  workflow_call:
+    inputs:
+      solution:
+        required: true
+        type: string
+      working-directory:
+        required: true
+        type: string
+      test-filter:
+        required: true
+        type: string
+      publish-project:
+        required: false
+        type: string
+        default: ''
+      runtime:
+        required: false
+        type: string
+        default: ''
+      artifact-name:
+        required: false
+        type: string
+        default: ''
+      source-ref:
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: >-
+      ${{
+        inputs.runtime == 'osx-arm64' && 'macos-latest' ||
+        inputs.runtime == 'win-x64' && 'windows-latest' ||
+        'ubuntu-latest'
+      }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: iyulab/Filer
+          token: ${{ secrets.RELEASE_TOKEN }}
+          ref: ${{ inputs.source-ref || '' }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/Directory.Packages.props') }}
+          restore-keys: ${{ runner.os }}-nuget-
+
+      - name: Restore
+        run: dotnet restore ${{ inputs.solution }}
+
+      - name: Build
+        run: dotnet build ${{ inputs.solution }} --no-restore
+
+      - name: Test
+        run: >-
+          dotnet test ${{ inputs.solution }} --no-build
+          ${{ inputs.test-filter != '' && format('--filter "{0}"', inputs.test-filter) || '' }}
+
+      - name: Publish
+        if: inputs.publish-project != ''
+        run: >-
+          dotnet publish ${{ inputs.publish-project }}
+          -c Release
+          -r ${{ inputs.runtime }}
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -o publish-output
+        working-directory: .
+
+      - name: Upload artifact
+        if: inputs.publish-project != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: publish-output/
+          retention-days: 1
