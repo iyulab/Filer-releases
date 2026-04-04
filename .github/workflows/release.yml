@@ -260,8 +260,12 @@ jobs:
           body: ${{ needs.changelog.outputs.body }}
           files: release-artifacts/*
 
-      - uses: actions/upload-artifact@v4
+      - name: Delete all intermediate artifacts
+        uses: geekyeggo/delete-artifact@v5
         with:
-          name: release-${{ needs.version.outputs.tag }}
-          path: release-artifacts/
-          retention-days: 1
+          name: |
+            electron-dist-win
+            filer-host-win-x64
+            filer-ai-win-x64
+            filer-launcher-win-x64
+            filer-setup
