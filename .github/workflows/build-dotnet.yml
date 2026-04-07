@@ -92,7 +92,9 @@ jobs:
 
       - name: Sign published executable
         if: inputs.publish-project != '' && inputs.runtime == 'win-x64'
-        uses: ./.github/actions/sign
+        # Pinned to a specific commit SHA in iyulab/code-sign for supply-chain
+        # safety; bump intentionally when the action is updated.
+        uses: iyulab/code-sign@690dc9eb5815099a91492b9b7de47da76a4e98c1
         with:
           # publish-output lives at repo root because the Publish step
           # runs with working-directory: '.'; use absolute path since

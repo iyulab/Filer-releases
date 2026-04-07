@@ -140,7 +140,9 @@ jobs:
         run: dotnet publish src/launcher/Filer.Launcher.csproj -c Release -r win-x64 --self-contained -o publish/launcher
 
       - name: Sign launcher binary (must precede NSIS build)
-        uses: ./.github/actions/sign
+        # Pinned to a specific commit SHA in iyulab/code-sign for supply-chain
+        # safety; bump intentionally when the action is updated.
+        uses: iyulab/code-sign@690dc9eb5815099a91492b9b7de47da76a4e98c1
         with:
           # The launcher is published with PublishSingleFile=true, so a single
           # self-contained Filer.Launcher.exe bundles all runtime libraries.
@@ -167,7 +169,9 @@ jobs:
           mv src/launcher/installer/Filer-setup.exe publish/
 
       - name: Sign NSIS installer
-        uses: ./.github/actions/sign
+        # Pinned to a specific commit SHA in iyulab/code-sign for supply-chain
+        # safety; bump intentionally when the action is updated.
+        uses: iyulab/code-sign@690dc9eb5815099a91492b9b7de47da76a4e98c1
         with:
           files: ${{ github.workspace }}/publish/Filer-setup.exe
 
