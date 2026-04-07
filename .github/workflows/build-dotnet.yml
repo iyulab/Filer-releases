@@ -29,6 +29,10 @@ on:
         type: string
         default: ''
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   build:
     name: Build & Test
@@ -38,6 +42,10 @@ jobs:
         inputs.runtime == 'win-x64' && 'windows-latest' ||
         'ubuntu-latest'
       }}
+    # Signing path uses OIDC federated credential, which requires the
+    # job to run in the 'production' environment. Non-signing runs use
+    # this environment harmlessly (no protection rules configured).
+    environment: ${{ inputs.runtime == 'win-x64' && inputs.publish-project != '' && 'production' || '' }}
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
@@ -81,6 +89,15 @@ jobs:
           -p:EnableCompressionInSingleFile=true
           -o publish-output
         working-directory: .
+
+      - name: Sign published executable
+        if: inputs.publish-project != '' && inputs.runtime == 'win-x64'
+        uses: iyulab/code-sign@main
+        with:
+          # publish-output lives at repo root because the Publish step
+          # runs with working-directory: '.'; use absolute path since
+          # composite-action uses: steps inherit the job-level working-directory.
+          files: ${{ github.workspace }}/publish-output/*.exe
 
       - name: Upload artifact
         if: inputs.publish-project != ''
