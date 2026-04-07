@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   version:
@@ -121,6 +122,7 @@ jobs:
     needs: version
     if: needs.version.outputs.released == 'true'
     runs-on: windows-latest
+    environment: production
     steps:
       - uses: actions/checkout@v4
         with:
@@ -136,6 +138,16 @@ jobs:
 
       - name: Publish
         run: dotnet publish src/launcher/Filer.Launcher.csproj -c Release -r win-x64 --self-contained -o publish/launcher
+
+      - name: Sign launcher binaries (must precede NSIS build)
+        uses: iyulab/code-sign@main
+        with:
+          # Sign the launcher entry point and our managed assembly.
+          # Microsoft CoreCLR runtime DLLs in publish/launcher are already
+          # signed upstream and do not need re-signing.
+          files: |
+            ${{ github.workspace }}/publish/launcher/Filer.Launcher.exe
+            ${{ github.workspace }}/publish/launcher/Filer.Launcher.dll
 
       - name: Install NSIS
         run: choco install nsis -y --no-progress
@@ -156,6 +168,11 @@ jobs:
             "/DPUBLISH_DIR=${WIN_PUBLISH_DIR}" \
             src/launcher/installer/launcher-installer.nsi
           mv src/launcher/installer/Filer-setup.exe publish/
+
+      - name: Sign NSIS installer
+        uses: iyulab/code-sign@main
+        with:
+          files: ${{ github.workspace }}/publish/Filer-setup.exe
 
       - uses: actions/upload-artifact@v4
         with:
@@ -181,8 +198,10 @@ jobs:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       AI_CONNECTION_STRING: ${{ secrets.AI_CONNECTION_STRING }}
 
-  draft-release:
-    name: Create draft release
+  publish:
+    name: Publish release
+    # All build-* jobs already sign their binaries via the iyulab/code-sign
+    # composite action, so this job only needs to package and publish.
     needs: [version, changelog, build-ui, build-host, build-ai, build-launcher]
     runs-on: ubuntu-latest
     steps:
@@ -247,7 +266,7 @@ jobs:
           require('fs').writeFileSync('latest.json', JSON.stringify(m, null, 2));
           "
 
-      - name: Create draft release with unsigned artifacts
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.RELEASE_TOKEN }}
@@ -259,79 +278,6 @@ jobs:
             launcher ${{ needs.version.outputs.launcher_version }})
           body: ${{ needs.changelog.outputs.body }}
           files: release-artifacts/*
-          draft: true
-
-  request-sign:
-    name: Request code signing
-    needs: [version, draft-release]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Dispatch sign-request to iyulab/code-sign
-        uses: peter-evans/repository-dispatch@v4
-        with:
-          token: ${{ secrets.RELEASE_TOKEN }}
-          repository: iyulab/code-sign
-          event-type: sign-request
-          client-payload: >-
-            {
-              "caller_repo": "iyulab/Filer-releases",
-              "release_tag": "${{ needs.version.outputs.tag }}",
-              "assets": ["Filer-setup.exe"],
-              "request_id": "filer-releases-${{ github.run_id }}"
-            }
-
-  wait-for-signed:
-    name: Wait for signature
-    needs: [version, request-sign]
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Poll for signed marker
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          TAG: ${{ needs.version.outputs.tag }}
-        run: |
-          for i in $(seq 1 60); do
-            if gh release view "$TAG" --repo iyulab/Filer-releases --json assets \
-               | jq -e '.assets[] | select(.name == "Filer-setup.exe.signed")' > /dev/null; then
-              echo "Signed marker detected after ${i} attempts"
-              exit 0
-            fi
-            echo "Attempt $i: marker not yet present, sleeping 15s"
-            sleep 15
-          done
-          echo "::error::Timeout waiting for signature marker"
-          gh release view "$TAG" --repo iyulab/Filer-releases --json assets
-          exit 1
-
-  finalize-release:
-    name: Finalize release
-    needs: [version, wait-for-signed]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Verify signed installer is present
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          TAG: ${{ needs.version.outputs.tag }}
-        run: |
-          mkdir -p /tmp/verify
-          gh release download "$TAG" --repo iyulab/Filer-releases --pattern Filer-setup.exe --dir /tmp/verify --clobber
-          ls -la /tmp/verify
-          test -s /tmp/verify/Filer-setup.exe
-
-      - name: Remove marker asset
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          TAG: ${{ needs.version.outputs.tag }}
-        run: |
-          gh release delete-asset "$TAG" Filer-setup.exe.signed --repo iyulab/Filer-releases --yes || true
-
-      - name: Promote draft to published
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          TAG: ${{ needs.version.outputs.tag }}
-        run: |
-          gh release edit "$TAG" --repo iyulab/Filer-releases --draft=false
 
       - name: Delete all intermediate artifacts
         uses: geekyeggo/delete-artifact@v5

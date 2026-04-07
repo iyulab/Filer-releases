@@ -22,10 +22,17 @@ on:
       AI_CONNECTION_STRING:
         required: false
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   build:
     name: Package Electron
     runs-on: ${{ inputs.os }}
+    # Production environment is required for the OIDC federated credential
+    # subject claim that gates Azure Key Vault access during signing.
+    environment: ${{ inputs.os == 'windows-latest' && 'production' || '' }}
     defaults:
       run:
         working-directory: src/ui
@@ -60,6 +67,15 @@ jobs:
         run: npx electron-builder ${{ inputs.platform-flag }} --publish never
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Sign Electron main executable
+        if: inputs.os == 'windows-latest'
+        uses: iyulab/code-sign@main
+        with:
+          # Filer.exe is the electron main process entry. Other DLLs in the
+          # win-unpacked directory are signed by the Electron Foundation
+          # upstream and accepted by SmartScreen / Smart App Control.
+          files: ${{ github.workspace }}/src/ui/dist/win-unpacked/Filer.exe
 
       - name: Upload Electron unpacked
         uses: actions/upload-artifact@v4
