@@ -139,15 +139,12 @@ jobs:
       - name: Publish
         run: dotnet publish src/launcher/Filer.Launcher.csproj -c Release -r win-x64 --self-contained -o publish/launcher
 
-      - name: Sign launcher binaries (must precede NSIS build)
+      - name: Sign launcher binary (must precede NSIS build)
         uses: ./.github/actions/sign
         with:
-          # Sign the launcher entry point and our managed assembly.
-          # Microsoft CoreCLR runtime DLLs in publish/launcher are already
-          # signed upstream and do not need re-signing.
-          files: |
-            ${{ github.workspace }}/publish/launcher/Filer.Launcher.exe
-            ${{ github.workspace }}/publish/launcher/Filer.Launcher.dll
+          # The launcher is published with PublishSingleFile=true, so a single
+          # self-contained Filer.Launcher.exe bundles all runtime libraries.
+          files: ${{ github.workspace }}/publish/launcher/Filer.Launcher.exe
 
       - name: Install NSIS
         run: choco install nsis -y --no-progress
