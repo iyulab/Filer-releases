@@ -181,8 +181,8 @@ jobs:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       AI_CONNECTION_STRING: ${{ secrets.AI_CONNECTION_STRING }}
 
-  publish:
-    name: Publish release
+  draft-release:
+    name: Create draft release
     needs: [version, changelog, build-ui, build-host, build-ai, build-launcher]
     runs-on: ubuntu-latest
     steps:
@@ -247,7 +247,7 @@ jobs:
           require('fs').writeFileSync('latest.json', JSON.stringify(m, null, 2));
           "
 
-      - name: Publish to Filer-releases
+      - name: Create draft release with unsigned artifacts
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.RELEASE_TOKEN }}
@@ -259,6 +259,79 @@ jobs:
             launcher ${{ needs.version.outputs.launcher_version }})
           body: ${{ needs.changelog.outputs.body }}
           files: release-artifacts/*
+          draft: true
+
+  request-sign:
+    name: Request code signing
+    needs: [version, draft-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch sign-request to iyulab/code-sign
+        uses: peter-evans/repository-dispatch@v4
+        with:
+          token: ${{ secrets.RELEASE_TOKEN }}
+          repository: iyulab/code-sign
+          event-type: sign-request
+          client-payload: >-
+            {
+              "caller_repo": "iyulab/Filer-releases",
+              "release_tag": "${{ needs.version.outputs.tag }}",
+              "assets": ["Filer-setup.exe"],
+              "request_id": "filer-releases-${{ github.run_id }}"
+            }
+
+  wait-for-signed:
+    name: Wait for signature
+    needs: [version, request-sign]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Poll for signed marker
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          for i in $(seq 1 60); do
+            if gh release view "$TAG" --repo iyulab/Filer-releases --json assets \
+               | jq -e '.assets[] | select(.name == "Filer-setup.exe.signed")' > /dev/null; then
+              echo "Signed marker detected after ${i} attempts"
+              exit 0
+            fi
+            echo "Attempt $i: marker not yet present, sleeping 15s"
+            sleep 15
+          done
+          echo "::error::Timeout waiting for signature marker"
+          gh release view "$TAG" --repo iyulab/Filer-releases --json assets
+          exit 1
+
+  finalize-release:
+    name: Finalize release
+    needs: [version, wait-for-signed]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify signed installer is present
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          mkdir -p /tmp/verify
+          gh release download "$TAG" --repo iyulab/Filer-releases --pattern Filer-setup.exe --dir /tmp/verify --clobber
+          ls -la /tmp/verify
+          test -s /tmp/verify/Filer-setup.exe
+
+      - name: Remove marker asset
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          gh release delete-asset "$TAG" Filer-setup.exe.signed --repo iyulab/Filer-releases --yes || true
+
+      - name: Promote draft to published
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          gh release edit "$TAG" --repo iyulab/Filer-releases --draft=false
 
       - name: Delete all intermediate artifacts
         uses: geekyeggo/delete-artifact@v5
