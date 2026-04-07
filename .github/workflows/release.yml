@@ -140,7 +140,7 @@ jobs:
         run: dotnet publish src/launcher/Filer.Launcher.csproj -c Release -r win-x64 --self-contained -o publish/launcher
 
       - name: Sign launcher binaries (must precede NSIS build)
-        uses: iyulab/code-sign@main
+        uses: ./.github/actions/sign
         with:
           # Sign the launcher entry point and our managed assembly.
           # Microsoft CoreCLR runtime DLLs in publish/launcher are already
@@ -170,7 +170,7 @@ jobs:
           mv src/launcher/installer/Filer-setup.exe publish/
 
       - name: Sign NSIS installer
-        uses: iyulab/code-sign@main
+        uses: ./.github/actions/sign
         with:
           files: ${{ github.workspace }}/publish/Filer-setup.exe
 

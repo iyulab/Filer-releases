@@ -70,7 +70,7 @@ jobs:
 
       - name: Sign Electron main executable
         if: inputs.os == 'windows-latest'
-        uses: iyulab/code-sign@main
+        uses: ./.github/actions/sign
         with:
           # Filer.exe is the electron main process entry. Other DLLs in the
           # win-unpacked directory are signed by the Electron Foundation

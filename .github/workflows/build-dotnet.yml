@@ -92,7 +92,7 @@ jobs:
 
       - name: Sign published executable
         if: inputs.publish-project != '' && inputs.runtime == 'win-x64'
-        uses: iyulab/code-sign@main
+        uses: ./.github/actions/sign
         with:
           # publish-output lives at repo root because the Publish step
           # runs with working-directory: '.'; use absolute path since
