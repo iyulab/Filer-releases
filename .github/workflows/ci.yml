@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write   # required because build-dotnet.yml declares it (signing path, unused in CI)
 
 # Expose dispatch payload as workflow-level env so jobs can reference safely
 env:
