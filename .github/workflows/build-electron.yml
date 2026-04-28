@@ -63,6 +63,30 @@ jobs:
         env:
           MAIN_VITE_AI_CONNECTION_STRING: ${{ secrets.AI_CONNECTION_STRING }}
 
+      - name: Verify telemetry connection string was inlined
+        # Vite inlines `import.meta.env.MAIN_VITE_*` literals at build time;
+        # an empty/missing secret causes dead-code elimination to strip the
+        # entire telemetry init block, producing packaged builds that look
+        # healthy but emit nothing. This step asserts the bundle contains
+        # an InstrumentationKey, which is the load-bearing signal that the
+        # secret was actually piped through. Skipped when the secret is
+        # intentionally unset (e.g., release candidates without telemetry).
+        if: ${{ secrets.AI_CONNECTION_STRING != '' }}
+        shell: bash
+        run: |
+          set -e
+          BUNDLE="out/main/index.js"
+          if [ ! -f "$BUNDLE" ]; then
+            echo "::error::expected $BUNDLE after npm run build"
+            ls -la out/main/ || true
+            exit 1
+          fi
+          if ! grep -q "InstrumentationKey=" "$BUNDLE"; then
+            echo "::error::AI_CONNECTION_STRING was set but its InstrumentationKey did not survive into the bundle. Vite likely tree-shook the telemetry init path — check that MAIN_VITE_AI_CONNECTION_STRING is actually populated when 'npm run build' runs."
+            exit 1
+          fi
+          echo "OK — telemetry connection string inlined into $BUNDLE"
+
       - name: Package with electron-builder (dir target)
         run: npx electron-builder ${{ inputs.platform-flag }} --publish never
         env:
