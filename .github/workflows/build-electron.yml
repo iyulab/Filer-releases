@@ -71,10 +71,20 @@ jobs:
         # an InstrumentationKey, which is the load-bearing signal that the
         # secret was actually piped through. Skipped when the secret is
         # intentionally unset (e.g., release candidates without telemetry).
-        if: ${{ secrets.AI_CONNECTION_STRING != '' }}
+        #
+        # NOTE: cannot use `if: ${{ secrets.X != '' }}` — GitHub disallows
+        # secrets in step-level if-expressions, which causes a workflow-
+        # parse error at trigger time on the calling workflow (release.yml).
+        # The presence-check is therefore performed inside bash via env.
         shell: bash
+        env:
+          AI_CONN: ${{ secrets.AI_CONNECTION_STRING }}
         run: |
           set -e
+          if [ -z "$AI_CONN" ]; then
+            echo "AI_CONNECTION_STRING is unset for this build; skipping inline verification."
+            exit 0
+          fi
           BUNDLE="out/main/index.js"
           if [ ! -f "$BUNDLE" ]; then
             echo "::error::expected $BUNDLE after npm run build"
