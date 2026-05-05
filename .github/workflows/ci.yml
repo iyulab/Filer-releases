@@ -76,6 +76,7 @@ jobs:
           repository: iyulab/Filer
           token: ${{ secrets.RELEASE_TOKEN }}
           ref: ${{ env.SOURCE_SHA }}
+          submodules: recursive
 
       - uses: actions/setup-node@v4
         with:
