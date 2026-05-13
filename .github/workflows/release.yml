@@ -28,7 +28,7 @@ jobs:
       ai_version: ${{ steps.check.outputs.ai_version }}
       launcher_version: ${{ steps.check.outputs.launcher_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: iyulab/Filer
           token: ${{ secrets.RELEASE_TOKEN }}
@@ -69,7 +69,7 @@ jobs:
     outputs:
       body: ${{ steps.changelog.outputs.changes || steps.fallback.outputs.changes || 'Initial release' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: iyulab/Filer
           token: ${{ secrets.RELEASE_TOKEN }}
@@ -124,12 +124,12 @@ jobs:
     runs-on: windows-latest
     environment: production
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: iyulab/Filer
           token: ${{ secrets.RELEASE_TOKEN }}
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
 
@@ -175,13 +175,13 @@ jobs:
         with:
           files: ${{ github.workspace }}/publish/Filer-setup.exe
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: filer-launcher-win-x64
           path: publish/launcher/
           retention-days: 1
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: filer-setup
           path: publish/Filer-setup.exe
@@ -206,13 +206,13 @@ jobs:
     needs: [version, changelog, build-ui, build-host, build-ai, build-launcher]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: iyulab/Filer
           token: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
