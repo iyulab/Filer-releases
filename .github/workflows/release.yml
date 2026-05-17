@@ -146,7 +146,7 @@ jobs:
       - name: Sign launcher binary (must precede NSIS build)
         # Pinned to a specific commit SHA in iyulab/code-sign for supply-chain
         # safety; bump intentionally when the action is updated.
-        uses: iyulab/code-sign@690dc9eb5815099a91492b9b7de47da76a4e98c1
+        uses: iyulab/code-sign@2a87f96983a3e79695eb5e8e98566650181abb7e
         with:
           # The launcher is published with PublishSingleFile=true, so a single
           # self-contained Filer.Launcher.exe bundles all runtime libraries.
@@ -175,7 +175,7 @@ jobs:
       - name: Sign NSIS installer
         # Pinned to a specific commit SHA in iyulab/code-sign for supply-chain
         # safety; bump intentionally when the action is updated.
-        uses: iyulab/code-sign@690dc9eb5815099a91492b9b7de47da76a4e98c1
+        uses: iyulab/code-sign@2a87f96983a3e79695eb5e8e98566650181abb7e
         with:
           files: ${{ github.workspace }}/publish/Filer-setup.exe
 
