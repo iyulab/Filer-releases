@@ -68,11 +68,14 @@ jobs:
         # Vite inlines `import.meta.env.MAIN_VITE_*` literals at build time;
         # an empty/missing secret causes dead-code elimination to strip the
         # entire telemetry init block, producing packaged builds that look
-        # healthy but emit nothing. This step asserts the bundle contains
-        # the secret's literal value (whatever form — full connection
-        # string `InstrumentationKey=...;IngestionEndpoint=...` OR a raw
-        # IK GUID — the Node `applicationinsights` SDK accepts both).
-        # Skipped when the secret is intentionally unset.
+        # healthy but emit nothing. This step asserts (a) the secret is a
+        # well-formed App Insights connection string and (b) its literal
+        # value survived into the bundle. The UI gates init() on
+        # isValidConnectionString(), which REQUIRES the literal
+        # `InstrumentationKey=` segment — a raw IK GUID (no prefix) is
+        # rejected at runtime and telemetry.init() becomes a silent no-op,
+        # so we reject it here too. Skipped when the secret is intentionally
+        # unset (e.g. fork/PR builds without repo secrets).
         #
         # NOTE: cannot use `if: ${{ secrets.X != '' }}` — GitHub disallows
         # secrets in step-level if-expressions, which causes a workflow-
@@ -92,6 +95,21 @@ jobs:
             echo "AI_CONNECTION_STRING is unset for this build; skipping inline verification."
             exit 0
           fi
+          # A non-empty but malformed secret (e.g. a stale "-" placeholder)
+          # passes the emptiness check above, gets inlined by Vite, then is
+          # REJECTED at runtime by isValidConnectionString() — making
+          # telemetry.init() a silent no-op and shipping a telemetry-dark
+          # installer. Assert the `InstrumentationKey=` segment so a broken
+          # secret fails the build LOUDLY instead. (Root cause of the
+          # 2026-06-04 dark-telemetry incident: a length-1 "-" secret value
+          # that grep-matched the bundle and passed the old length-only check.)
+          case "$AI_CONN" in
+            *InstrumentationKey=*) : ;;
+            *)
+              echo "::error::AI_CONNECTION_STRING is set (length ${#AI_CONN}) but lacks 'InstrumentationKey=' — runtime isValidConnectionString() rejects it and telemetry.init() becomes a silent no-op. Set AI_CONNECTION_STRING to the full App Insights connection string."
+              exit 1
+              ;;
+          esac
           BUNDLE="out/main/index.js"
           if [ ! -f "$BUNDLE" ]; then
             echo "::error::expected $BUNDLE after npm run build"
