@@ -1,0 +1,58 @@
+name: Prune Actions caches
+
+# Keeps only the newest cache per key-prefix (e.g. Linux-nuget, Windows-nuget,
+# node-cache-Linux-x64-npm) and deletes superseded ones. Necessary because
+# build-dotnet.yml uses `restore-keys` (prefix fallback): every restore bumps an
+# old cache's last-accessed time, so GitHub's 7-day auto-eviction never fires and
+# stale 1.2-1.76 GiB NuGet caches accumulate toward the 10 GB repo limit.
+
+on:
+  schedule:
+    - cron: '17 4 * * 1'   # weekly, Monday 04:17 UTC
+  workflow_dispatch:
+
+permissions:
+  actions: write     # required to delete caches
+  contents: read
+
+concurrency:
+  group: cache-prune
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete superseded caches (keep newest per key-prefix)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "Before:"
+          gh cache list --repo "$REPO" --limit 100 --json id,key,sizeInBytes,createdAt \
+            | jq -r '"  total \(length) caches, \((map(.sizeInBytes) | add // 0) / 1073741824 | .*100|round/100) GiB"'
+
+          # Prefix = key with the trailing -<hash> (40+ hex chars) stripped.
+          DELETE_IDS=$(gh cache list --repo "$REPO" --limit 100 --json id,key,createdAt \
+            | jq -r '
+                map(.prefix = (.key | sub("-[0-9a-f]{40,}$"; "")))
+                | group_by(.prefix)
+                | map(sort_by(.createdAt) | reverse | .[1:])   # keep newest, rest -> delete
+                | flatten
+                | .[].id
+              ')
+
+          if [ -z "$DELETE_IDS" ]; then
+            echo "Nothing to prune (one or zero caches per prefix)."
+            exit 0
+          fi
+
+          for id in $DELETE_IDS; do
+            echo "Deleting superseded cache $id"
+            gh cache delete "$id" --repo "$REPO"
+          done
+
+          echo "After:"
+          gh cache list --repo "$REPO" --limit 100 --json id,sizeInBytes \
+            | jq -r '"  total \(length) caches, \((map(.sizeInBytes) | add // 0) / 1073741824 | .*100|round/100) GiB"'
