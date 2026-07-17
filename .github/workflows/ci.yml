@@ -13,6 +13,7 @@ env:
   SOURCE_SHA: ${{ github.event.client_payload.sha }}
   SOURCE_REF: ${{ github.event.client_payload.ref }}
   SOURCE_EVENT: ${{ github.event.client_payload.event }}
+  SOURCE_BEFORE: ${{ github.event.client_payload.before }}
 
 jobs:
   # --- Detect which components changed ---
@@ -37,7 +38,24 @@ jobs:
         id: filter
         shell: bash
         run: |
-          CHANGED=$(git diff --name-only HEAD~1 HEAD || echo "")
+          # Multi-commit pushes: diff the whole pushed range (before..sha) so every
+          # commit's paths count, not just the last one's. Falls back to HEAD~1 when
+          # `before` is absent (PR dispatch, manual), all-zeros (branch creation), or
+          # unfetchable (force-pushed away). A shallow clone is fine — diff only needs
+          # the two tree objects, so a depth-1 fetch of `before` is sufficient.
+          BASE=""
+          if [[ -n "$SOURCE_BEFORE" && "$SOURCE_BEFORE" != "null" && ! "$SOURCE_BEFORE" =~ ^0+$ ]]; then
+            if git fetch --no-tags --depth=1 origin "$SOURCE_BEFORE" 2>/dev/null; then
+              BASE="$SOURCE_BEFORE"
+            fi
+          fi
+          if [[ -n "$BASE" ]]; then
+            echo "diff base: pushed range $BASE..HEAD"
+            CHANGED=$(git diff --name-only "$BASE" HEAD || echo "")
+          else
+            echo "diff base: fallback HEAD~1 (no usable 'before' in payload)"
+            CHANGED=$(git diff --name-only HEAD~1 HEAD || echo "")
+          fi
           echo "ui=$(echo "$CHANGED" | grep -q '^src/ui/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "host=$(echo "$CHANGED" | grep -q '^src/host/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "ai=$(echo "$CHANGED" | grep -q '^src/ai/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
