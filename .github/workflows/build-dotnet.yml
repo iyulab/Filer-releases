@@ -79,6 +79,20 @@ jobs:
           dotnet test ${{ inputs.solution }} --no-build
           ${{ inputs.test-filter != '' && format('--filter "{0}"', inputs.test-filter) || '' }}
 
+      # Hermeticity guard (Filer ISSUE-filer-20260717-0010): tests must never touch
+      # the real user profile's Filer home. CI runners start with no ~/.filer, so ANY
+      # file appearing there after the test run is proof of a leak (a suite booting
+      # host code without FILER_HOME/FILER_SKIP_UI_CONFIG redirection).
+      - name: Assert tests did not write $HOME/.filer
+        shell: bash
+        run: |
+          if [ -d "$HOME/.filer" ]; then
+            echo "::error::Tests created $HOME/.filer — a test suite is writing the real user profile (ISSUE-0010 class). Contents:"
+            find "$HOME/.filer" -maxdepth 3 | head -50
+            exit 1
+          fi
+          echo "hermeticity OK — no \$HOME/.filer created"
+
       - name: Publish
         if: inputs.publish-project != ''
         run: >-

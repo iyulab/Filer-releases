@@ -89,6 +89,19 @@ jobs:
       - run: npm run typecheck
       - run: npm test
 
+      # Hermeticity guard (Filer ISSUE-filer-20260717-0010) — mirrors the dotnet
+      # jobs: a fresh runner has no ~/.filer, so its existence after tests proves
+      # a suite escaped its mocks and wrote the real user profile.
+      - name: Assert tests did not write $HOME/.filer
+        shell: bash
+        run: |
+          if [ -d "$HOME/.filer" ]; then
+            echo "::error::UI tests created $HOME/.filer — a test escaped its mocks (ISSUE-0010 class). Contents:"
+            find "$HOME/.filer" -maxdepth 3 | head -50
+            exit 1
+          fi
+          echo "hermeticity OK — no \$HOME/.filer created"
+
   # --- Host: build + test ---
   host:
     name: filer-host
