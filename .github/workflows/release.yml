@@ -203,6 +203,137 @@ jobs:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       AI_CONNECTION_STRING: ${{ secrets.AI_CONNECTION_STRING }}
 
+  build-store-installer:
+    name: Build offline installer (Microsoft Store)
+    # Must run after ui/host/ai/launcher are built and signed: the offline payload embeds their
+    # published output directly, so this cannot be folded into build-launcher.
+    needs: [version, build-ui, build-host, build-ai, build-launcher]
+    if: needs.version.outputs.released == 'true'
+    runs-on: windows-latest
+    # Signing uses an OIDC federated credential, which requires the 'production' environment.
+    # No job-level `permissions:` block: release.yml already grants id-token: write at the
+    # workflow level, and the sibling build-launcher job relies on that same grant. Do not copy
+    # the per-job permissions pattern from build-electron.yml/build-dotnet.yml — those are
+    # reusable workflow_call files and declare their own.
+    environment: production
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: iyulab/Filer
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Download component artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      # The runtime layer is NOT rebuilt here. It comes from the pinned artifact that
+      # pin-ui-runtime.yml built and signed once, so the web manifest and this installer seed
+      # ship the same bytes rather than two independently produced trees with two chances to
+      # diverge. src/ui/electron-runtime.lock.json is the single source for where it lives.
+      - name: Read the pinned runtime lock
+        id: lock
+        shell: pwsh
+        run: |
+          $lock = Get-Content src/ui/electron-runtime.lock.json -Raw | ConvertFrom-Json
+          # Hard-fail rather than emit a half-formed seed. The lock is updated by a manual,
+          # cross-repo owner paste that can lag a release tag reaching CI; a seed built against
+          # an incomplete lock would be missing its entire runtime layer and would not be
+          # runnable, while still looking like a successful build.
+          foreach ($f in 'runtimeId', 'sha256', 'url', 'size') {
+            if ([string]::IsNullOrWhiteSpace([string]$lock.$f)) {
+              throw "electron-runtime.lock.json is missing '$f' -- run pin-ui-runtime.yml and paste its four values before releasing"
+            }
+          }
+          "id=$($lock.runtimeId)"   | Out-File $env:GITHUB_OUTPUT -Append
+          "sha=$($lock.sha256)"     | Out-File $env:GITHUB_OUTPUT -Append
+          "url=$($lock.url)"        | Out-File $env:GITHUB_OUTPUT -Append
+          Write-Host "Pinned runtime $($lock.runtimeId) (electron $($lock.electronVersion))"
+
+      - name: Fetch and verify the pinned runtime layer
+        shell: pwsh
+        run: |
+          $zip = "$env:RUNNER_TEMP/ui-runtime.zip"
+          Invoke-WebRequest -Uri "${{ steps.lock.outputs.url }}" -OutFile $zip
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          # The lock's hash is the whole reason this asset can be trusted without rebuilding it.
+          # Checking it here means a swapped or truncated asset fails the release instead of
+          # being sealed into an installer that is then submitted to the Store, where 10.2.9
+          # guarantees it will never be updated.
+          if ($actual -ne "${{ steps.lock.outputs.sha }}".ToLower()) {
+            throw "runtime zip sha256 mismatch`n  expected ${{ steps.lock.outputs.sha }}`n  actual   $actual"
+          }
+          Expand-Archive $zip -DestinationPath ui-runtime -Force
+          if (-not (Test-Path ui-runtime/Filer.exe)) { throw "pinned runtime has no Filer.exe" }
+          if (Test-Path ui-runtime/resources/app.asar) { throw "pinned runtime contains an app layer" }
+
+      # release.yml publishes one monolithic ui artifact for as long as the runtime-pin handoff's
+      # section 2 deprecation window is open, so the app layer is carved out here. The split is
+      # exactly: app layer = resources/app.asar at that path, and nothing else.
+      - name: Carve the app layer
+        shell: pwsh
+        run: |
+          $src = 'artifacts/electron-dist-win/resources/app.asar'
+          if (-not (Test-Path $src)) { throw "no app.asar in artifacts/electron-dist-win" }
+          New-Item -ItemType Directory -Force ui-app/resources | Out-Null
+          Copy-Item $src ui-app/resources/app.asar
+          # Nothing else is copied on purpose: any extra file here would be seeded into the slot
+          # and then survive composition, since UiComposer only adds and overwrites, never prunes.
+
+      # Both -UiSource and -UiRuntimeSource accept a plain directory (Expand-Source), so the
+      # carved trees and the expanded runtime go straight through with no re-zipping.
+      - name: Assemble seed payload
+        shell: pwsh
+        env:
+          UI_VERSION: ${{ needs.version.outputs.version }}
+          HOST_VERSION: ${{ needs.version.outputs.host_version }}
+          AI_VERSION: ${{ needs.version.outputs.ai_version }}
+          LAUNCHER_VERSION: ${{ needs.version.outputs.launcher_version }}
+        run: |
+          pwsh -File scripts/build-offline-payload.ps1 `
+            -UiSource ui-app `
+            -UiRuntimeSource ui-runtime `
+            -UiRuntimeId "${{ steps.lock.outputs.id }}" `
+            -HostSource artifacts/filer-host-win-x64 `
+            -AiSource artifacts/filer-ai-win-x64 `
+            -UiVersion "$env:UI_VERSION" `
+            -HostVersion "$env:HOST_VERSION" `
+            -AiVersion "$env:AI_VERSION" `
+            -LauncherVersion "$env:LAUNCHER_VERSION" `
+            -OutDir payload
+
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+        shell: cmd
+
+      - name: Build offline installer
+        shell: pwsh
+        env:
+          UI_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          Copy-Item src/ui/build/icon.ico src/launcher/installer/ -Force
+          $launcher = (Resolve-Path artifacts/filer-launcher-win-x64).Path
+          $payload  = (Resolve-Path payload).Path
+          & "C:\Program Files (x86)\NSIS\makensis.exe" /INPUTCHARSET UTF8 `
+            "/DVERSION=$env:UI_VERSION" `
+            "/DPUBLISH_DIR=$launcher" "/DOFFLINE_PAYLOAD_DIR=$payload" /DSILENT_UI `
+            src/launcher/installer/launcher-installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed with exit code $LASTEXITCODE" }
+          New-Item -ItemType Directory -Force publish | Out-Null
+          Move-Item src/launcher/installer/Filer-setup.exe publish/Filer-setup-offline.exe
+
+      - name: Sign offline installer
+        # Pinned to a commit SHA for supply-chain safety; bump intentionally.
+        uses: iyulab/code-sign@2a87f96983a3e79695eb5e8e98566650181abb7e
+        with:
+          files: ${{ github.workspace }}/publish/Filer-setup-offline.exe
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: filer-setup-offline
+          path: publish/Filer-setup-offline.exe
+          retention-days: 1
+
   publish:
     name: Publish release
     # All build-* jobs already sign their binaries via the iyulab/code-sign
