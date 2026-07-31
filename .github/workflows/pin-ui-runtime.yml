@@ -1,0 +1,204 @@
+name: Pin UI Runtime
+
+# Cadence: once per Electron version bump, NOT per release. The whole point of the pinned
+# runtime is that these exact bytes are produced once and reused byte-for-byte afterwards --
+# Authenticode timestamping and electron-builder's version stamping both change the hash on
+# every rebuild, so rebuilding per release would defeat the split it exists to enable.
+#
+# Run this when src/ui/package.json's `electron` devDependency changes. Then paste the four
+# values it prints into src/ui/electron-runtime.lock.json in iyulab/Filer and commit.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source-ref:
+        description: 'iyulab/Filer ref carrying the Electron version to pin (blank = default branch)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  id-token: write   # OIDC -> Azure Key Vault, for iyulab/code-sign
+  contents: write   # upload the runtime asset to the ui-runtime-store release
+
+jobs:
+  pin:
+    name: Build, sign and pin the UI runtime layer
+    runs-on: windows-latest
+    # Required for the OIDC federated credential subject claim that gates Key Vault access,
+    # same as build-electron.yml's signing job.
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: iyulab/Filer
+          token: ${{ secrets.RELEASE_TOKEN }}
+          ref: ${{ inputs.source-ref || '' }}
+          submodules: recursive
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/ui/package-lock.json
+
+      - name: Install dependencies
+        working-directory: src/ui
+        run: npm ci
+
+      # Deliberately NOT passing MAIN_VITE_AI_CONNECTION_STRING. The bundle it would be inlined
+      # into lives in app.asar, which this job discards -- so the secret would be built into an
+      # artifact that is thrown away, and never into the one published here. build-electron.yml
+      # still passes it for the app layer, where it belongs.
+      - name: Build
+        working-directory: src/ui
+        run: npm run build
+
+      - name: Package with electron-builder (dir target)
+        working-directory: src/ui
+        run: npx electron-builder --win --publish never
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+
+      # Runs BEFORE the app layer is stripped, so it sees the tree exactly as electron-builder
+      # produced it. This is the only place the disableAsarIntegrity contract is checked against
+      # an artifact that actually ships: build-win.ps1 runs it locally, but the real release path
+      # (build-electron.yml calling electron-builder directly) does not. If it regressed silently,
+      # one Filer.exe would re-embed app.asar's SHA-256, get pinned as *the* runtime for many
+      # releases, and every release reusing it would fail Electron's startup integrity check in
+      # the field -- loud, but post-release.
+      - name: Verify package layer contract
+        working-directory: src/ui
+        run: node scripts/check-package-layers.mjs "${{ github.workspace }}/src/ui/dist/win-unpacked"
+
+      # What remains after removing the app layer *is* the runtime layer, by construction -- not
+      # a separately maintained file list that could drift from what electron-builder emits.
+      - name: Strip the app layer
+        shell: pwsh
+        run: |
+          $u = "${{ github.workspace }}/src/ui/dist/win-unpacked"
+          Remove-Item "$u/resources/app.asar" -Force
+          # asarUnpack is not configured today and this directory is not produced; remove it if
+          # that ever changes, so app-layer files can never leak into the pinned runtime.
+          if (Test-Path "$u/resources/app.asar.unpacked") {
+            Remove-Item "$u/resources/app.asar.unpacked" -Recurse -Force
+          }
+          if (Test-Path "$u/resources/app.asar") { throw "app.asar survived the strip" }
+          if (-not (Test-Path "$u/Filer.exe"))   { throw "Filer.exe missing from the runtime layer" }
+
+      # Enumerated, not globbed. iyulab/code-sign expands each `files:` line through Resolve-Path,
+      # whose `**` does not recurse past one directory level -- a pattern like
+      # win-unpacked/**/*.node resolves to zero files and the action THROWS on a zero-match line.
+      # Get-ChildItem -Recurse is genuinely recursive, so this list tracks the layout instead of
+      # encoding an assumption about it.
+      - name: Enumerate PE files to sign
+        id: pe
+        shell: pwsh
+        run: |
+          $u = "${{ github.workspace }}/src/ui/dist/win-unpacked"
+          $pe = Get-ChildItem $u -Recurse -File -Include *.exe,*.dll,*.node
+          if ($pe.Count -eq 0) { throw "no PE files found under $u -- refusing to sign nothing" }
+          Write-Host "Found $($pe.Count) PE file(s):"
+          $pe | ForEach-Object { Write-Host "  $($_.FullName.Substring($u.Length + 1))" }
+          $list = ($pe | ForEach-Object { $_.FullName }) -join [Environment]::NewLine
+          "files<<PEEOF" | Out-File $env:GITHUB_OUTPUT -Append
+          $list          | Out-File $env:GITHUB_OUTPUT -Append
+          "PEEOF"        | Out-File $env:GITHUB_OUTPUT -Append
+
+      - name: Sign the runtime layer
+        # Pinned to a commit SHA for supply-chain safety, matching build-electron.yml.
+        uses: iyulab/code-sign@2a87f96983a3e79695eb5e8e98566650181abb7e
+        with:
+          files: ${{ steps.pe.outputs.files }}
+
+      # The actual regression gate. Recursive and exhaustive, so it catches any future unsigned
+      # PE anywhere in the tree -- including files the enumeration above did not anticipate.
+      # Policy 10.2.9 requires "the binary AND ALL OF ITS PE FILES" to be signed; a 2026-07-25
+      # sweep of a real shipped release found 8 that were not, which is why this exists.
+      - name: Verify signature coverage
+        shell: pwsh
+        run: |
+          $u = "${{ github.workspace }}/src/ui/dist/win-unpacked"
+          $bad = Get-ChildItem $u -Recurse -File -Include *.exe,*.dll,*.node |
+            Where-Object { (Get-AuthenticodeSignature $_.FullName).Status -ne 'Valid' }
+          if ($bad) {
+            $bad | ForEach-Object {
+              $s = Get-AuthenticodeSignature $_.FullName
+              Write-Host "::error::unsigned or invalid: $($_.FullName.Substring($u.Length + 1)) [$($s.Status)]"
+            }
+            throw "$($bad.Count) PE file(s) failed signature verification"
+          }
+          Write-Host "All PE files carry a valid signature."
+
+      # Content-addressed id: first 12 hex of the runtime zip's sha256, matching how
+      # docs/MS-STORE.md section 5 derives -UiRuntimeId for a local carve. UiSlots.RuntimeStoreDir
+      # is documented as "keyed by content hash", so two byte-identical builds collapse to one
+      # store directory instead of duplicating ~300 MB per rebuild.
+      - name: Zip and mint the runtime id
+        id: pack
+        shell: pwsh
+        run: |
+          $u   = "${{ github.workspace }}/src/ui/dist/win-unpacked"
+          $zip = "${{ github.workspace }}/ui-runtime.zip"
+          Compress-Archive -Path "$u/*" -DestinationPath $zip -CompressionLevel Optimal
+          $sha   = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          $size  = (Get-Item $zip).Length
+          $id    = $sha.Substring(0, 12)
+          $named = "${{ github.workspace }}/ui-runtime-$id.zip"
+          Move-Item $zip $named
+          "id=$id"      | Out-File $env:GITHUB_OUTPUT -Append
+          "sha=$sha"    | Out-File $env:GITHUB_OUTPUT -Append
+          "size=$size"  | Out-File $env:GITHUB_OUTPUT -Append
+          "path=$named" | Out-File $env:GITHUB_OUTPUT -Append
+
+      # A permanent asset store, NOT a per-ui-tag release. Per-tag releases are expected to roll
+      # off eventually; every historical runtime id must stay resolvable forever, because a
+      # manifest already in the field -- or a Filer-setup-offline.exe seed built against an older
+      # id -- may still reference it.
+      - name: Publish to the runtime store
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = 'ui-runtime-store'
+          gh release view $tag --repo ${{ github.repository }} 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo ${{ github.repository }} `
+              --title 'UI runtime store' `
+              --notes 'Permanent, append-only store of pinned Electron runtime layers. One asset per Electron bump, named by content-addressed runtime id. Never delete an asset here: manifests in the field and offline installer seeds reference them by URL forever.'
+            if ($LASTEXITCODE -ne 0) { throw "failed to create the $tag release" }
+          }
+          # No --clobber: an id collision means either a re-run or a hash collision, and silently
+          # replacing bytes that a shipped manifest already points at is exactly what this store
+          # exists to prevent.
+          gh release upload $tag "${{ steps.pack.outputs.path }}" --repo ${{ github.repository }}
+          if ($LASTEXITCODE -ne 0) { throw "upload failed -- an asset for id ${{ steps.pack.outputs.id }} may already exist" }
+
+      - name: Print the lock fields
+        shell: pwsh
+        run: |
+          $electron = (Get-Content "${{ github.workspace }}/src/ui/package.json" | ConvertFrom-Json).devDependencies.electron
+          $url = "https://github.com/${{ github.repository }}/releases/download/ui-runtime-store/ui-runtime-${{ steps.pack.outputs.id }}.zip"
+          # Built as an ordered object rather than a here-string: a here-string's closing "@ must
+          # sit at column 0, which does not survive being nested inside a YAML block scalar.
+          $lock = [ordered]@{
+            electronVersion = $electron
+            runtimeId       = '${{ steps.pack.outputs.id }}'
+            sha256          = '${{ steps.pack.outputs.sha }}'
+            url             = $url
+            size            = [long]'${{ steps.pack.outputs.size }}'
+          }
+          $json = $lock | ConvertTo-Json
+          Write-Host $json
+          $lines = @(
+            '## Paste into `src/ui/electron-runtime.lock.json` in iyulab/Filer',
+            '',
+            'Manual cross-repo owner step, the same shape as the Partner Center URL refresh.',
+            'Commit it there; the per-release job then reads these four fields.',
+            '',
+            '```json',
+            $json,
+            '```'
+          )
+          $lines | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
