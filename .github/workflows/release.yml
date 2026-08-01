@@ -328,6 +328,22 @@ jobs:
         with:
           files: ${{ github.workspace }}/publish/Filer-setup-offline.exe
 
+      # Deliberately ahead of the publish step rather than after it. This is the only way to
+      # retrieve the binary by hand if publishing fails, so it has to run before the step it
+      # insures against -- otherwise a throw there takes the whole job's signed output with it.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: filer-setup-offline
+          path: publish/Filer-setup-offline.exe
+          retention-days: 1
+
+      # Pinned rather than taken from the runner image: this step gates a release, and the
+      # image's Python moves without notice.
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
       # The Store's EXE/MSI path requires a versioned HTTPS URL that does not redirect
       # (policy 10.2.9 #3/#4). Release asset URLs answer with a 302 to a signed, expiring
       # location, so the submitted URL has to point somewhere else. This publishes the same
@@ -357,7 +373,9 @@ jobs:
           $expected = (Get-Item $file).Length
           $key = "$env:UI_VERSION/Filer-setup-offline.exe"
 
-          python -m pip install --quiet --disable-pip-version-check boto3
+          # Version-pinned on purpose: an unpinned install would let whatever was published
+          # upstream that morning into a release-gating step. Bump intentionally.
+          python -m pip install --quiet --disable-pip-version-check 'boto3==1.43.62'
           if ($LASTEXITCODE -ne 0) { throw "boto3 install failed" }
 
           # Uploads in parts, then reads the object back and hashes it. wrangler cannot be
@@ -409,14 +427,6 @@ jobs:
           "published=true" | Out-File $env:GITHUB_OUTPUT -Append
           "url=$url"       | Out-File $env:GITHUB_OUTPUT -Append
           "Store package URL: ``$url``" | Out-File $env:GITHUB_STEP_SUMMARY -Append
-
-      # Kept even though the installer is published above: if that step skipped or failed,
-      # this is the only way to retrieve the binary by hand.
-      - uses: actions/upload-artifact@v7
-        with:
-          name: filer-setup-offline
-          path: publish/Filer-setup-offline.exe
-          retention-days: 1
 
   publish:
     name: Publish release
