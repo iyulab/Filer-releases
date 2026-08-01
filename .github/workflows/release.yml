@@ -328,6 +328,90 @@ jobs:
         with:
           files: ${{ github.workspace }}/publish/Filer-setup-offline.exe
 
+      # The Store's EXE/MSI path requires a versioned HTTPS URL that does not redirect
+      # (policy 10.2.9 #3/#4). Release asset URLs answer with a 302 to a signed, expiring
+      # location, so the submitted URL has to point somewhere else. This publishes the same
+      # signed binary that was just built, under a version-pinned key.
+      - name: Publish offline installer to object storage
+        id: store_url
+        shell: pwsh
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DOWNLOAD_HOST: ${{ vars.STORE_DOWNLOAD_HOST }}
+          UI_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          # Skipping keeps the release green while the download host is still being set up.
+          # Once the four values are present, a failure here is a release failure by design:
+          # a release whose Store URL is missing or wrong is worse than one that stops.
+          foreach ($name in 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'ACCOUNT_ID', 'DOWNLOAD_HOST') {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              Write-Warning "$name is not set -- skipping. No Store package URL for this release."
+              "published=false" | Out-File $env:GITHUB_OUTPUT -Append
+              exit 0
+            }
+          }
+
+          $file = 'publish/Filer-setup-offline.exe'
+          $expected = (Get-Item $file).Length
+          $key = "$env:UI_VERSION/Filer-setup-offline.exe"
+
+          python -m pip install --quiet --disable-pip-version-check boto3
+          if ($LASTEXITCODE -ne 0) { throw "boto3 install failed" }
+
+          # Uploads in parts, then reads the object back and hashes it. wrangler cannot be
+          # used here: it refuses anything over 300 MiB and this installer is larger.
+          python scripts/publish-store-installer.py $file 'filer-downloads' $key
+          if ($LASTEXITCODE -ne 0) { throw "publishing the installer failed with exit code $LASTEXITCODE" }
+
+          $url = "https://$env:DOWNLOAD_HOST/$key"
+
+          # Redirect check, on its own. PowerShell 7 throws HttpResponseException on a 3xx
+          # when redirects are disabled, so the status has to be read off the exception.
+          # Retrying that like a transport failure would report a connectivity problem for
+          # the one defect this gate exists to catch.
+          $head = $null
+          foreach ($attempt in 1..5) {
+            try {
+              $head = Invoke-WebRequest -Uri $url -Method Head -MaximumRedirection 0 -ErrorAction Stop
+              break
+            } catch {
+              $status = $_.Exception.Response.StatusCode.value__
+              if ($status -ge 300 -and $status -lt 400) {
+                throw "$url answers HTTP $status -- a package URL that redirects is rejected at submission. Serve the object directly from the custom domain."
+              }
+              if ($attempt -eq 5) { throw "HEAD $url failed after 5 attempts: $($_.Exception.Message)" }
+              Write-Host "attempt $attempt -- $($_.Exception.Message)"
+              Start-Sleep -Seconds ($attempt * 5)
+            }
+          }
+
+          # Content-Length is not guaranteed on a HEAD, so fall back to a one-byte ranged
+          # GET, whose Content-Range carries the total.
+          $len = $head.Headers['Content-Length']
+          if ($len) {
+            $served = [int64]($len | Select-Object -First 1)
+          } else {
+            $tail = Invoke-WebRequest -Uri $url -Headers @{ Range = 'bytes=-1' } -MaximumRedirection 0 -ErrorAction Stop
+            $range = $tail.Headers['Content-Range'] | Select-Object -First 1
+            if ($range -notmatch '/(\d+)$') {
+              throw "cannot determine the published size: neither Content-Length nor Content-Range came back"
+            }
+            $served = [int64]$Matches[1]
+          }
+
+          if ($served -ne $expected) {
+            throw "the public URL serves $served bytes, expected $expected"
+          }
+
+          Write-Host "Store package URL: $url ($served bytes)"
+          "published=true" | Out-File $env:GITHUB_OUTPUT -Append
+          "url=$url"       | Out-File $env:GITHUB_OUTPUT -Append
+          "Store package URL: ``$url``" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+
+      # Kept even though the installer is published above: if that step skipped or failed,
+      # this is the only way to retrieve the binary by hand.
       - uses: actions/upload-artifact@v7
         with:
           name: filer-setup-offline
