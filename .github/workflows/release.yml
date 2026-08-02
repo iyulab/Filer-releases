@@ -102,7 +102,7 @@ jobs:
     with:
       solution: FilerAI.Host.slnx
       working-directory: src/host
-      test-filter: "FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack&FullyQualifiedName!~FilerAI.Mcp.Tests"
+      test-filter: "FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack"
       publish-project: src/host/src/FilerAI.Host/FilerAI.Host.csproj
       runtime: win-x64
       artifact-name: filer-host-win-x64

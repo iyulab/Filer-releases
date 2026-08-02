@@ -130,7 +130,7 @@ jobs:
     with:
       solution: FilerAI.Host.slnx
       working-directory: src/host
-      test-filter: "FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack&FullyQualifiedName!~FilerAI.Mcp.Tests&Platform!=Windows"
+      test-filter: "FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack&Platform!=Windows"
       source-ref: ${{ github.event.client_payload.sha }}
 
   # --- AI: build + test ---
