@@ -56,7 +56,10 @@ jobs:
             echo "diff base: fallback HEAD~1 (no usable 'before' in payload)"
             CHANGED=$(git diff --name-only HEAD~1 HEAD || echo "")
           fi
-          echo "ui=$(echo "$CHANGED" | grep -q '^src/ui/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          # plugins/ (the bundled-plugins submodule) loads into the ui/Electron process at
+          # runtime, so a plugins-only change routes through the ui gate — same rule as
+          # scripts/verify-ci.ps1's Get-ChangedComponents in the Filer repo.
+          echo "ui=$(echo "$CHANGED" | grep -qE '^(src/ui/|plugins/)' && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "host=$(echo "$CHANGED" | grep -q '^src/host/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "ai=$(echo "$CHANGED" | grep -q '^src/ai/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "Changed files:"
@@ -106,6 +109,14 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+
+      # Bundled-plugins JS unit tests (node --test) — vitest.config.ts can't reach
+      # plugins/**/*.test.js (Filer ISSUE-filer-20260819-plugin-node-tests-absent-from-real-ci).
+      # Same command as scripts/verify-ci.ps1's local gate, run from the repo root since
+      # this job's default working-directory is src/ui.
+      - name: node --test (bundled plugins)
+        working-directory: .
+        run: node --test plugins/filer-official-plugins/plugins/**/*.test.js
 
       # Hermeticity guard (Filer ISSUE-filer-20260717-0010) — mirrors the dotnet
       # jobs: a fresh runner has no ~/.filer, so its existence after tests proves
