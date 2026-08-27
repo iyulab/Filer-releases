@@ -116,7 +116,10 @@ jobs:
       # this job's default working-directory is src/ui.
       - name: node --test (bundled plugins)
         working-directory: .
-        run: node --test plugins/filer-official-plugins/plugins/**/*.test.js
+        # Quoted: this step's shell is bash, where globstar is off by default, so an
+        # unquoted `**` degrades to a single `*` and node never sees the real pattern.
+        # Quoting hands the literal string to node, which globs `**` correctly itself.
+        run: node --test 'plugins/filer-official-plugins/plugins/**/*.test.js'
 
       # Hermeticity guard (Filer ISSUE-filer-20260717-0010) — mirrors the dotnet
       # jobs: a fresh runner has no ~/.filer, so its existence after tests proves
