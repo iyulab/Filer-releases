@@ -71,27 +71,46 @@ jobs:
     if: needs.version.outputs.released == 'true'
     runs-on: ubuntu-latest
     outputs:
-      body: ${{ steps.changelog.outputs.changes || steps.fallback.outputs.changes || 'Initial release' }}
+      body: ${{ steps.notes.outputs.body }}
     steps:
       - uses: actions/checkout@v6
         with:
           repository: iyulab/Filer
           token: ${{ secrets.RELEASE_TOKEN }}
+          ref: ${{ needs.version.outputs.tag }}
           fetch-depth: 0
 
-      - name: Generate changelog from conventional commits
-        id: changelog
-        continue-on-error: true
-        uses: requarks/changelog-action@v1
-        with:
-          token: ${{ secrets.RELEASE_TOKEN }}
-          tag: ${{ needs.version.outputs.tag }}
-          excludeTypes: ''
-
-      - name: Fallback changelog for first release
-        if: steps.changelog.outcome == 'failure'
-        run: echo "changes=Initial release" >> "$GITHUB_OUTPUT"
-        id: fallback
+      # The previous action was bound to this repository's own tags and commits (github.context.repo),
+      # so its guard failed on every release and every body shipped as "Initial release". The notes
+      # are composed from the iyulab/Filer checkout instead: a curated docs/releases/<tag>.md leads
+      # when the release carries one, then a conventional-commit digest for the tag range. No
+      # continue-on-error — a release with a placeholder body is worse than one that stops.
+      - name: Compose release notes
+        id: notes
+        shell: bash
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          PREV="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          RANGE="${PREV:+${PREV}..}${TAG}"
+          {
+            if [ -f "docs/releases/${TAG}.md" ]; then cat "docs/releases/${TAG}.md"; echo; fi
+            echo "## Changes since ${PREV:-the beginning}"
+            for type in feat fix perf; do
+              lines="$(git log "${RANGE}" --no-merges --pretty='- %s' -- src/ui src/host src/ai src/launcher \
+                       | grep -E "^- ${type}(\([^)]*\))?!?: " || true)"
+              if [ -n "$lines" ]; then
+                case "$type" in feat) echo "### Features";; fix) echo "### Fixes";; perf) echo "### Performance";; esac
+                echo "$lines"; echo
+              fi
+            done
+          } > release-notes.md
+          {
+            echo "body<<NOTES_EOF"
+            cat release-notes.md
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
 
   build-host:
     name: Build filer-host
@@ -100,6 +119,7 @@ jobs:
     uses: ./.github/workflows/build-dotnet.yml
     secrets: inherit
     with:
+      source-ref: ${{ needs.version.outputs.tag }}
       solution: FilerAI.Host.slnx
       working-directory: src/host
       test-filter: "FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack"
@@ -114,6 +134,7 @@ jobs:
     uses: ./.github/workflows/build-dotnet.yml
     secrets: inherit
     with:
+      source-ref: ${{ needs.version.outputs.tag }}
       solution: FilerAI.slnx
       working-directory: src/ai
       test-filter: "FullyQualifiedName!~Integration&FullyQualifiedName!~Live&FullyQualifiedName!~OopsInstaller&FullyQualifiedName!~InstallOops_BinaryAvailable"
@@ -132,6 +153,7 @@ jobs:
         with:
           repository: iyulab/Filer
           token: ${{ secrets.RELEASE_TOKEN }}
+          ref: ${{ needs.version.outputs.tag }}
 
       - uses: actions/setup-dotnet@v5
         with:
@@ -197,6 +219,7 @@ jobs:
     if: needs.version.outputs.released == 'true'
     uses: ./.github/workflows/build-electron.yml
     with:
+      source-ref: ${{ needs.version.outputs.tag }}
       os: windows-latest
       platform-flag: '--win'
     secrets:
@@ -221,6 +244,7 @@ jobs:
         with:
           repository: iyulab/Filer
           token: ${{ secrets.RELEASE_TOKEN }}
+          ref: ${{ needs.version.outputs.tag }}
 
       - name: Download component artifacts
         uses: actions/download-artifact@v8
@@ -428,17 +452,69 @@ jobs:
           "url=$url"       | Out-File $env:GITHUB_OUTPUT -Append
           "Store package URL: ``$url``" | Out-File $env:GITHUB_STEP_SUMMARY -Append
 
+  smoke-post-update:
+    name: Post-update smoke (packaged)
+    # The one gate that runs the path an update actually takes: install the previous public
+    # release, let it bootstrap, install this candidate's launcher over it, update to the candidate
+    # set over the launcher pipe, and require the new UI to report ready with nothing rolled back —
+    # then, as the positive control, offer a ui that cannot start and require the launcher to roll
+    # it back. Every other gate runs unpackaged; the v0.5.1/v0.5.2 brick (a UI that quit on its
+    # first start after an update) passed all of them. Script and evidence rules live in
+    # iyulab/Filer: scripts/ci/post-update-smoke.ps1.
+    needs: [version, build-ui, build-host, build-ai, build-launcher]
+    if: needs.version.outputs.released == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: iyulab/Filer
+          token: ${{ secrets.RELEASE_TOKEN }}
+          ref: ${{ needs.version.outputs.tag }}
+
+      - name: Download component artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Run the packaged post-update smoke
+        shell: pwsh
+        env:
+          UI_VERSION: ${{ needs.version.outputs.version }}
+          HOST_VERSION: ${{ needs.version.outputs.host_version }}
+          AI_VERSION: ${{ needs.version.outputs.ai_version }}
+          LAUNCHER_VERSION: ${{ needs.version.outputs.launcher_version }}
+        run: |
+          pwsh -NoProfile -File scripts/ci/post-update-smoke.ps1 `
+            -ArtifactsDir artifacts `
+            -UiVersion "$env:UI_VERSION" `
+            -HostVersion "$env:HOST_VERSION" `
+            -AiVersion "$env:AI_VERSION" `
+            -LauncherVersion "$env:LAUNCHER_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw "post-update smoke failed with exit code $LASTEXITCODE" }
+
+      - name: Keep the launcher and UI logs when the smoke fails
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: post-update-smoke-logs
+          path: |
+            ~/.filer/logs/
+            ~/.filer/components.json
+          retention-days: 7
+          if-no-files-found: ignore
+
   publish:
     name: Publish release
     # All build-* jobs already sign their binaries via the iyulab/code-sign
     # composite action, so this job only needs to package and publish.
-    needs: [version, changelog, build-ui, build-host, build-ai, build-launcher]
+    needs: [version, changelog, build-ui, build-host, build-ai, build-launcher, smoke-post-update]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           repository: iyulab/Filer
           token: ${{ secrets.RELEASE_TOKEN }}
+          ref: ${{ needs.version.outputs.tag }}
 
       - uses: actions/setup-node@v6
         with:
