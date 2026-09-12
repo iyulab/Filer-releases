@@ -121,6 +121,15 @@ jobs:
         # Quoting hands the literal string to node, which globs `**` correctly itself.
         run: node --test 'plugins/filer-official-plugins/plugins/**/*.test.js'
 
+      # Bundled-plugins lint: the plugins are plain CommonJS with no build step, so the
+      # submodule root's eslint (no-empty + the same no-silent-catch rule the UI enforces
+      # on its own code) is their only static guard. Same command as scripts/verify-ci.ps1.
+      - name: lint (bundled plugins)
+        working-directory: plugins/filer-official-plugins
+        run: |
+          npm ci
+          npm run lint
+
       # Hermeticity guard (Filer ISSUE-filer-20260717-0010) — mirrors the dotnet
       # jobs: a fresh runner has no ~/.filer, so its existence after tests proves
       # a suite escaped its mocks and wrote the real user profile.
