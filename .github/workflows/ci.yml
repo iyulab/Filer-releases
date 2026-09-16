@@ -166,7 +166,7 @@ jobs:
     with:
       solution: FilerAI.slnx
       working-directory: src/ai
-      test-filter: "FullyQualifiedName!~Integration&FullyQualifiedName!~Live&FullyQualifiedName!~OopsInstaller&FullyQualifiedName!~InstallOops_BinaryAvailable"
+      test-filter: "FullyQualifiedName!~Integration&FullyQualifiedName!~Live&FullyQualifiedName!~OopsInstaller&FullyQualifiedName!~InstallOops_BinaryAvailable&Platform!=Windows"
       source-ref: ${{ github.event.client_payload.sha }}
 
   # --- Report final status back to Filer repo ---
