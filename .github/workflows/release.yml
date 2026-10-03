@@ -589,6 +589,10 @@ jobs:
           body: ${{ needs.changelog.outputs.body }}
           files: release-artifacts/*
 
+      # Every artifact the build jobs upload, once the release carries them. filer-setup-offline was missing
+      # from this list from the day it was added (8f555d8), so each published release left a ~360 MB copy for a
+      # day. Runs that fail before this step keep their artifacts on purpose: "Re-run failed jobs" downloads
+      # them again instead of rebuilding and re-signing everything, and retention-days: 1 bounds what they cost.
       - name: Delete all intermediate artifacts
         uses: geekyeggo/delete-artifact@v6
         with:
@@ -598,3 +602,4 @@ jobs:
             filer-ai-win-x64
             filer-launcher-win-x64
             filer-setup
+            filer-setup-offline
