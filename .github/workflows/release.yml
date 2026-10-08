@@ -70,6 +70,7 @@ jobs:
     needs: version
     if: needs.version.outputs.released == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       body: ${{ steps.notes.outputs.body }}
     steps:
@@ -78,13 +79,11 @@ jobs:
           repository: iyulab/Filer
           token: ${{ secrets.RELEASE_TOKEN }}
           ref: ${{ needs.version.outputs.tag }}
-          fetch-depth: 0
 
-      # The previous action was bound to this repository's own tags and commits (github.context.repo),
-      # so its guard failed on every release and every body shipped as "Initial release". The notes
-      # are composed from the iyulab/Filer checkout instead: a curated docs/releases/<tag>.md leads
-      # when the release carries one, then a conventional-commit digest for the tag range. No
-      # continue-on-error — a release with a placeholder body is worse than one that stops.
+      # The release body is the curated docs/releases/<tag>.md from the iyulab/Filer checkout, and only that. This
+      # repository is public; the source repository is not, and its commit subjects carry internal tracking text, so a
+      # digest of them must not be published (it was, under "Changes since", until 2026-10). A tag without curated notes
+      # stops here — a release with a placeholder or raw-subject body is worse than one that stops.
       - name: Compose release notes
         id: notes
         shell: bash
@@ -92,23 +91,14 @@ jobs:
           TAG: ${{ needs.version.outputs.tag }}
         run: |
           set -euo pipefail
-          PREV="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
-          RANGE="${PREV:+${PREV}..}${TAG}"
-          {
-            if [ -f "docs/releases/${TAG}.md" ]; then cat "docs/releases/${TAG}.md"; echo; fi
-            echo "## Changes since ${PREV:-the beginning}"
-            for type in feat fix perf; do
-              lines="$(git log "${RANGE}" --no-merges --pretty='- %s' -- src/ui src/host src/ai src/launcher \
-                       | grep -E "^- ${type}(\([^)]*\))?!?: " || true)"
-              if [ -n "$lines" ]; then
-                case "$type" in feat) echo "### Features";; fix) echo "### Fixes";; perf) echo "### Performance";; esac
-                echo "$lines"; echo
-              fi
-            done
-          } > release-notes.md
+          NOTES="docs/releases/${TAG}.md"
+          if [ ! -s "${NOTES}" ]; then
+            echo "::error::${NOTES} is missing or empty in iyulab/Filer at ${TAG} — write the curated notes before tagging"
+            exit 1
+          fi
           {
             echo "body<<NOTES_EOF"
-            cat release-notes.md
+            cat "${NOTES}"
             echo "NOTES_EOF"
           } >> "$GITHUB_OUTPUT"
 
