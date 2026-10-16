@@ -544,8 +544,16 @@ jobs:
 
           BASE_URL="https://github.com/iyulab/Filer-releases/releases/download/${TAG}"
 
+          # Manifest protocols: the full set is published as the file the current launcher reads (latest-v2.json,
+          # manifestVersion 2). Every older protocol's file carries ONLY the current launcher, so an older launcher updates
+          # itself first and never applies a set it predates (an older launcher replaces the backend in place under a running
+          # window, and a backend that requires a credential the older window cannot present refuses every call it makes).
+          # When the protocol goes up: publish the new file and move the previous one into RETIRED.
           node -e "
+          const PROTOCOL = 2;
+          const RETIRED = [{ file: 'latest.json', manifestVersion: 1 }];
           const m = {
+            manifestVersion: PROTOCOL,
             launcher: {
               version: '${LAUNCHER_VERSION}',
               artifacts: { 'win-x64': { url: '${BASE_URL}/filer-launcher-win-x64.zip', sha256: '${LAUNCHER_SHA}', size: ${LAUNCHER_SIZE} } }
@@ -563,7 +571,11 @@ jobs:
               artifacts: { 'win-x64': { url: '${BASE_URL}/filer-ai-win-x64.zip', sha256: '${AI_SHA}', size: ${AI_SIZE} } }
             }
           };
-          require('fs').writeFileSync('latest.json', JSON.stringify(m, null, 2));
+          const fs = require('fs');
+          fs.writeFileSync('latest-v' + PROTOCOL + '.json', JSON.stringify(m, null, 2));
+          for (const r of RETIRED) {
+            fs.writeFileSync(r.file, JSON.stringify({ manifestVersion: r.manifestVersion, launcher: m.launcher }, null, 2));
+          }
           "
 
       - name: Publish release
