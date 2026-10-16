@@ -95,15 +95,30 @@ jobs:
 
       - name: Publish
         if: inputs.publish-project != ''
-        run: >-
-          dotnet publish ${{ inputs.publish-project }}
-          -c Release
-          -r ${{ inputs.runtime }}
-          --self-contained true
-          -p:PublishSingleFile=true
-          -p:IncludeNativeLibrariesForSelfExtract=true
-          -p:EnableCompressionInSingleFile=true
-          -o publish-output
+        # filer-host is the Application Insights emitter: it stamps the connection string into its assembly from the
+        # FilerTelemetryConnectionString property (a project that does not declare it ignores it). MSBuild reads ';' in a -p
+        # value as the next property, so the string's separators travel escaped as %3B — unescaped, only the
+        # InstrumentationKey part is stamped. The escaped form is masked like the secret itself.
+        shell: bash
+        env:
+          AI_CONN: ${{ secrets.AI_CONNECTION_STRING }}
+        run: |
+          set -e
+          extra=()
+          if [ -n "$AI_CONN" ]; then
+            escaped="${AI_CONN//;/%3B}"
+            echo "::add-mask::$escaped"
+            extra+=("-p:FilerTelemetryConnectionString=$escaped")
+          fi
+          dotnet publish "${{ inputs.publish-project }}" \
+            -c Release \
+            -r ${{ inputs.runtime }} \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
+            -p:EnableCompressionInSingleFile=true \
+            -o publish-output \
+            "${extra[@]}"
         working-directory: .
 
       - name: Sign published executable

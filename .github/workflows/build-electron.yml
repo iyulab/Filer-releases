@@ -95,6 +95,13 @@ jobs:
             echo "AI_CONNECTION_STRING is unset for this build; skipping inline verification."
             exit 0
           fi
+          # Since the host became the one emitter the window sends nothing to Azure and its source no longer reads the
+          # variable — the connection string is stamped into filer-host (build-dotnet.yml). Check the bundle only for a
+          # source that still inlines it.
+          if ! grep -rqsF "MAIN_VITE_AI_CONNECTION_STRING" src/main; then
+            echo "The ui source does not read MAIN_VITE_AI_CONNECTION_STRING (filer-host carries the connection string); skipping inline verification."
+            exit 0
+          fi
           # A non-empty but malformed secret (e.g. a stale "-" placeholder)
           # passes the emptiness check above, gets inlined by Vite, then is
           # REJECTED at runtime by isValidConnectionString() — making
