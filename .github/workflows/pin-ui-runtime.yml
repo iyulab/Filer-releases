@@ -108,7 +108,7 @@ jobs:
 
       - name: Sign the runtime layer
         # Pinned to a commit SHA for supply-chain safety, matching build-electron.yml.
-        uses: iyulab/code-sign@2a87f96983a3e79695eb5e8e98566650181abb7e
+        uses: iyulab/code-sign@c4c68c25295ce0010a396d54cdb017fd248c5cce
         with:
           files: ${{ steps.pe.outputs.files }}
 

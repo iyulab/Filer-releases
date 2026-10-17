@@ -138,7 +138,7 @@ jobs:
         if: inputs.os == 'windows-latest'
         # Pinned to a specific commit SHA in iyulab/code-sign for supply-chain
         # safety; bump intentionally when the action is updated.
-        uses: iyulab/code-sign@2a87f96983a3e79695eb5e8e98566650181abb7e
+        uses: iyulab/code-sign@c4c68c25295ce0010a396d54cdb017fd248c5cce
         with:
           # Filer.exe is the electron main process entry. Other DLLs in the
           # win-unpacked directory are signed by the Electron Foundation

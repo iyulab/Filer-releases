@@ -125,7 +125,7 @@ jobs:
         if: inputs.publish-project != '' && inputs.runtime == 'win-x64'
         # Pinned to a specific commit SHA in iyulab/code-sign for supply-chain
         # safety; bump intentionally when the action is updated.
-        uses: iyulab/code-sign@2a87f96983a3e79695eb5e8e98566650181abb7e
+        uses: iyulab/code-sign@c4c68c25295ce0010a396d54cdb017fd248c5cce
         with:
           # publish-output lives at repo root because the Publish step
           # runs with working-directory: '.'; use absolute path since
