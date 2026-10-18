@@ -28,6 +28,12 @@ on:
         required: false
         type: string
         default: ''
+      # The host component carries the plugin runtime (the sidecar + its child, built for plain Node into src/ui/out/plugin-runtime)
+      # at plugin-runtime/ — the path the launcher runs on the Node runtime layer.
+      with-plugin-runtime:
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   id-token: write
@@ -120,6 +126,28 @@ jobs:
             -o publish-output \
             "${extra[@]}"
         working-directory: .
+
+      - uses: actions/setup-node@v6
+        if: inputs.with-plugin-runtime
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/ui/package-lock.json
+
+      - name: Build the plugin runtime into the publish output
+        if: inputs.with-plugin-runtime
+        shell: bash
+        working-directory: src/ui
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        run: |
+          set -e
+          npm ci
+          npm run build:plugin-runtime
+          rm -rf ../../publish-output/plugin-runtime
+          cp -r out/plugin-runtime ../../publish-output/plugin-runtime
+          test -f ../../publish-output/plugin-runtime/plugin-sidecar.js
+          test -f ../../publish-output/plugin-runtime/plugin-child.js
 
       - name: Sign published executable
         if: inputs.publish-project != '' && inputs.runtime == 'win-x64'

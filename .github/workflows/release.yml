@@ -116,6 +116,7 @@ jobs:
       publish-project: src/host/src/FilerAI.Host/FilerAI.Host.csproj
       runtime: win-x64
       artifact-name: filer-host-win-x64
+      with-plugin-runtime: true
 
   build-ai:
     name: Build filer-ai
@@ -528,6 +529,9 @@ jobs:
           cp artifacts/filer-setup/Filer-setup.exe release-artifacts/
 
           cd artifacts/electron-dist-win && zip -r ../../release-artifacts/filer-ui-win-x64.zip . && cd ../..
+          # SHELL-TAURI T5: the host carries the plugin runtime; a host zip without it would leave a Node-layer install with no
+          # plugins (the launcher falls back to the Electron ui's copy only while one is installed).
+          test -f artifacts/filer-host-win-x64/plugin-runtime/plugin-sidecar.js || { echo "host artifact carries no plugin-runtime/plugin-sidecar.js"; exit 1; }
           cd artifacts/filer-host-win-x64 && zip -r ../../release-artifacts/filer-host-win-x64.zip . && cd ../..
           cd artifacts/filer-ai-win-x64 && zip -r ../../release-artifacts/filer-ai-win-x64.zip . && cd ../..
           cd artifacts/filer-launcher-win-x64 && zip -r ../../release-artifacts/filer-launcher-win-x64.zip . && cd ../..
