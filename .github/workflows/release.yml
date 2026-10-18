@@ -487,6 +487,12 @@ jobs:
         with:
           path: artifacts
 
+      # The ui test double (built only when the release names the Node runtime layer — see the next step) targets .NET 10.
+      - uses: actions/setup-dotnet@v5
+        if: hashFiles('src/host/node-runtime.lock.json') != ''
+        with:
+          dotnet-version: '10.0.x'
+
       - name: Run the packaged post-update smoke
         shell: pwsh
         env:
@@ -495,12 +501,29 @@ jobs:
           AI_VERSION: ${{ needs.version.outputs.ai_version }}
           LAUNCHER_VERSION: ${{ needs.version.outputs.launcher_version }}
         run: |
+          # SHELL-TAURI T5: once src/host/node-runtime.lock.json exists the release names the Node runtime layer (publish below),
+          # so the smoke offers that same layer — fetched from the lock's URL and checked against its sha256 — and asserts the
+          # plugin runtime runs on it and that leaving it rolls back to the Electron one. Without the lock: the Electron-only set.
+          $nodeArgs = @()
+          if (Test-Path 'src/host/node-runtime.lock.json') {
+            $lock = Get-Content 'src/host/node-runtime.lock.json' -Raw | ConvertFrom-Json
+            $layerZip = Join-Path $env:RUNNER_TEMP 'node-runtime.zip'
+            Invoke-WebRequest $lock.url -OutFile $layerZip
+            $sha = (Get-FileHash $layerZip -Algorithm SHA256).Hash.ToLower()
+            if ($sha -ne $lock.sha256) { throw "the Node runtime layer at $($lock.url) is $sha, the lock says $($lock.sha256)" }
+            if ($sha.Substring(0, 12) -ne $lock.runtimeId) { throw "the lock's runtimeId $($lock.runtimeId) is not its zip's id $($sha.Substring(0, 12))" }
+            # Phase E's crashing host is the ui test double in its fail mode (and Phase D runs with it too).
+            dotnet publish scripts/ci/ui-double/UiDouble.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:PublishTrimmed=true -o ui-double
+            if ($LASTEXITCODE -ne 0) { throw 'ui double publish failed' }
+            $nodeArgs = @('-NodeLayerZip', $layerZip, '-UiDoubleDir', (Resolve-Path 'ui-double').Path)
+            Write-Host "Node runtime layer $($lock.runtimeId) in the smoke"
+          }
           pwsh -NoProfile -File scripts/ci/post-update-smoke.ps1 `
             -ArtifactsDir artifacts `
             -UiVersion "$env:UI_VERSION" `
             -HostVersion "$env:HOST_VERSION" `
             -AiVersion "$env:AI_VERSION" `
-            -LauncherVersion "$env:LAUNCHER_VERSION"
+            -LauncherVersion "$env:LAUNCHER_VERSION" @nodeArgs
           if ($LASTEXITCODE -ne 0) { throw "post-update smoke failed with exit code $LASTEXITCODE" }
 
       - name: Keep the launcher and UI logs when the smoke fails
