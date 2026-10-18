@@ -295,6 +295,26 @@ jobs:
           # Nothing else is copied on purpose: any extra file here would be seeded into the slot
           # and then survive composition, since UiComposer only adds and overwrites, never prunes.
 
+      # SHELL-TAURI T5: while src/host/node-runtime.lock.json exists the release names the Node runtime layer for the host,
+      # so the seed carries that layer too (verified against the lock, as the Electron layer is) — an offline install then
+      # runs the host's plugin runtime on it from its first start, as an updated one does.
+      - name: Fetch and verify the Node runtime layer
+        id: nodelock
+        shell: pwsh
+        run: |
+          if (-not (Test-Path src/host/node-runtime.lock.json)) { "args=" | Out-File $env:GITHUB_OUTPUT -Append; return }
+          $lock = Get-Content src/host/node-runtime.lock.json -Raw | ConvertFrom-Json
+          foreach ($f in 'runtimeId', 'sha256', 'url', 'size') {
+            if ([string]::IsNullOrWhiteSpace([string]$lock.$f)) { throw "node-runtime.lock.json is missing '$f'" }
+          }
+          $zip = "$env:RUNNER_TEMP/node-runtime.zip"
+          Invoke-WebRequest -Uri $lock.url -OutFile $zip
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $lock.sha256.ToLower()) { throw "node runtime zip sha256 mismatch`n  expected $($lock.sha256)`n  actual   $actual" }
+          Expand-Archive $zip -DestinationPath node-runtime -Force
+          if (-not (Test-Path node-runtime/node.exe)) { throw "pinned Node runtime has no node.exe" }
+          "args=-NodeRuntimeSource node-runtime -NodeRuntimeId $($lock.runtimeId)" | Out-File $env:GITHUB_OUTPUT -Append
+
       # Both -UiSource and -UiRuntimeSource accept a plain directory (Expand-Source), so the
       # carved trees and the expanded runtime go straight through with no re-zipping.
       - name: Assemble seed payload
@@ -315,7 +335,7 @@ jobs:
             -HostVersion "$env:HOST_VERSION" `
             -AiVersion "$env:AI_VERSION" `
             -LauncherVersion "$env:LAUNCHER_VERSION" `
-            -OutDir payload
+            -OutDir payload ${{ steps.nodelock.outputs.args }}
 
       - name: Install NSIS
         run: choco install nsis -y --no-progress
