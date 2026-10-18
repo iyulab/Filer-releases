@@ -1,0 +1,117 @@
+name: Pin Node Runtime
+
+# SHELL-TAURI T5: the Node runtime layer the host's plugin sidecar runs on (the launcher's runtime-node-<id>/node.exe).
+# Cadence: once per Node version, NOT per release — the same bytes are reused by every release that names the layer, as the
+# Electron runtime layer is (pin-ui-runtime.yml).
+#
+# The layer is Node's own official win-x64 build, verified against the release's SHASUMS256.txt and its Authenticode
+# signature (the OpenJS Foundation's), never rebuilt or re-signed: node.exe at the root (the launcher's completeness
+# sentinel) and its LICENSE. Run it with the Node version to pin, then paste the printed lock into
+# src/host/node-runtime.lock.json in iyulab/Filer — a release names the layer only when that file exists.
+
+on:
+  workflow_dispatch:
+    inputs:
+      node-version:
+        description: 'Exact Node version to pin, e.g. 24.14.0 (an LTS line)'
+        required: true
+        type: string
+
+permissions:
+  contents: write   # upload the layer to the node-runtime-store release
+
+jobs:
+  pin:
+    name: Fetch, verify and pin the Node runtime layer
+    runs-on: windows-latest   # Get-AuthenticodeSignature is the signature check; it needs Windows
+    timeout-minutes: 20
+    steps:
+      - name: Fetch and verify the official build
+        id: fetch
+        shell: pwsh
+        run: |
+          $v = '${{ inputs.node-version }}'
+          if ($v -notmatch '^\d+\.\d+\.\d+$') { throw "node-version must be an exact x.y.z, got '$v'" }
+          $base = "https://nodejs.org/dist/v$v"
+          $zipName = "node-v$v-win-x64.zip"
+          $work = "${{ runner.temp }}/node-pin"
+          New-Item -ItemType Directory -Force $work | Out-Null
+          Invoke-WebRequest "$base/$zipName" -OutFile "$work/$zipName"
+          Invoke-WebRequest "$base/SHASUMS256.txt" -OutFile "$work/SHASUMS256.txt"
+          $expected = (Select-String -Path "$work/SHASUMS256.txt" -Pattern "  $([regex]::Escape($zipName))$").Line.Split(' ')[0]
+          if (-not $expected) { throw "$zipName is not listed in SHASUMS256.txt" }
+          $actual = (Get-FileHash "$work/$zipName" -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) { throw "sha256 mismatch for $zipName`n  expected $expected`n  actual   $actual" }
+          Expand-Archive "$work/$zipName" -DestinationPath "$work/x" -Force
+          $src = "$work/x/node-v$v-win-x64"
+          $layer = "$work/layer"
+          New-Item -ItemType Directory -Force $layer | Out-Null
+          Copy-Item "$src/node.exe" $layer
+          Copy-Item "$src/LICENSE" $layer
+          $sig = Get-AuthenticodeSignature "$layer/node.exe"
+          if ($sig.Status -ne 'Valid') { throw "node.exe signature is $($sig.Status)" }
+          Write-Host "node.exe signed by: $($sig.SignerCertificate.Subject)"
+          $ran = & "$layer/node.exe" -v
+          if ($ran -ne "v$v") { throw "node.exe reports $ran, expected v$v" }
+          "layer=$layer" | Out-File $env:GITHUB_OUTPUT -Append
+
+      # Content-addressed id: first 12 hex of the layer zip's sha256, as the Electron layer's (the launcher keys the store
+      # directory by it).
+      - name: Zip and mint the runtime id
+        id: pack
+        shell: pwsh
+        run: |
+          $zip = "${{ runner.temp }}/node-runtime.zip"
+          Compress-Archive -Path "${{ steps.fetch.outputs.layer }}/*" -DestinationPath $zip -CompressionLevel Optimal
+          $sha  = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item $zip).Length
+          $id   = $sha.Substring(0, 12)
+          $named = "${{ runner.temp }}/node-runtime-$id.zip"
+          Move-Item $zip $named
+          "id=$id"      | Out-File $env:GITHUB_OUTPUT -Append
+          "sha=$sha"    | Out-File $env:GITHUB_OUTPUT -Append
+          "size=$size"  | Out-File $env:GITHUB_OUTPUT -Append
+          "path=$named" | Out-File $env:GITHUB_OUTPUT -Append
+
+      # A permanent, append-only asset store (as ui-runtime-store): a manifest in the field or an offline installer seed may
+      # reference an id forever.
+      - name: Publish to the runtime store
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = 'node-runtime-store'
+          gh release view $tag --repo ${{ github.repository }} 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo ${{ github.repository }} `
+              --title 'Node runtime store' `
+              --notes 'Permanent, append-only store of pinned Node runtime layers (the official Node.js win-x64 node.exe and its LICENSE), named by content-addressed runtime id. Never delete an asset here: manifests in the field and offline installer seeds reference them by URL forever.'
+            if ($LASTEXITCODE -ne 0) { throw "failed to create the $tag release" }
+          }
+          # No --clobber: replacing bytes a shipped manifest points at is what this store exists to prevent.
+          gh release upload $tag "${{ steps.pack.outputs.path }}" --repo ${{ github.repository }}
+          if ($LASTEXITCODE -ne 0) { throw "upload failed -- an asset for id ${{ steps.pack.outputs.id }} may already exist" }
+
+      - name: Print the lock fields
+        shell: pwsh
+        run: |
+          $url = "https://github.com/${{ github.repository }}/releases/download/node-runtime-store/node-runtime-${{ steps.pack.outputs.id }}.zip"
+          $lock = [ordered]@{
+            nodeVersion = '${{ inputs.node-version }}'
+            runtimeId   = '${{ steps.pack.outputs.id }}'
+            sha256      = '${{ steps.pack.outputs.sha }}'
+            url         = $url
+            size        = [long]'${{ steps.pack.outputs.size }}'
+          }
+          $json = $lock | ConvertTo-Json
+          Write-Host $json
+          $lines = @(
+            '## Paste into `src/host/node-runtime.lock.json` in iyulab/Filer',
+            '',
+            'A release names the Node runtime layer for the host only while that file exists.',
+            '',
+            '```json',
+            $json,
+            '```'
+          )
+          $lines | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8

@@ -556,6 +556,12 @@ jobs:
           node -e "
           const PROTOCOL = 2;
           const RETIRED = [{ file: 'latest.json', manifestVersion: 1 }];
+          // SHELL-TAURI T5: the host names the Node runtime layer its plugin sidecar runs on only while src/host/node-runtime.lock.json
+          // exists (pin-node-runtime.yml prints it); a launcher on that layer runs the host's plugin-runtime/ on it, every other
+          // install keeps the Electron ui's copy.
+          const fs = require('fs');
+          const nodeLock = fs.existsSync('src/host/node-runtime.lock.json') ? JSON.parse(fs.readFileSync('src/host/node-runtime.lock.json', 'utf8')) : null;
+          const nodeLayer = nodeLock && { version: nodeLock.runtimeId, artifacts: { 'win-x64': { url: nodeLock.url, sha256: nodeLock.sha256, size: nodeLock.size } } };
           const m = {
             manifestVersion: PROTOCOL,
             launcher: {
@@ -568,14 +574,15 @@ jobs:
             },
             host: {
               version: '${HOST_VERSION}',
+              ...(nodeLayer ? { runtime: 'node' } : {}),
               artifacts: { 'win-x64': { url: '${BASE_URL}/filer-host-win-x64.zip', sha256: '${HOST_SHA}', size: ${HOST_SIZE} } }
             },
             ai: {
               version: '${AI_VERSION}',
               artifacts: { 'win-x64': { url: '${BASE_URL}/filer-ai-win-x64.zip', sha256: '${AI_SHA}', size: ${AI_SIZE} } }
-            }
+            },
+            ...(nodeLayer ? { runtimes: { node: nodeLayer } } : {})
           };
-          const fs = require('fs');
           fs.writeFileSync('latest-v' + PROTOCOL + '.json', JSON.stringify(m, null, 2));
           for (const r of RETIRED) {
             fs.writeFileSync(r.file, JSON.stringify({ manifestVersion: r.manifestVersion, launcher: m.launcher }, null, 2));
