@@ -603,7 +603,8 @@ jobs:
           // exists (pin-node-runtime.yml prints it); a launcher on that layer runs the host's plugin-runtime/ on it, every other
           // install keeps the Electron ui's copy.
           const fs = require('fs');
-          const nodeLock = fs.existsSync('src/host/node-runtime.lock.json') ? JSON.parse(fs.readFileSync('src/host/node-runtime.lock.json', 'utf8')) : null;
+          const lockPath = require('path').join(process.env.GITHUB_WORKSPACE, 'src/host/node-runtime.lock.json'); // this step runs inside release-artifacts/
+          const nodeLock = fs.existsSync(lockPath) ? JSON.parse(fs.readFileSync(lockPath, 'utf8')) : null;
           const nodeLayer = nodeLock && { version: nodeLock.runtimeId, artifacts: { 'win-x64': { url: nodeLock.url, sha256: nodeLock.sha256, size: nodeLock.size } } };
           const m = {
             manifestVersion: PROTOCOL,
