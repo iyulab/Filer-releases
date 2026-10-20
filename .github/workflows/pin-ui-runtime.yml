@@ -164,8 +164,10 @@ jobs:
           $tag = 'ui-runtime-store'
           gh release view $tag --repo ${{ github.repository }} 2>$null
           if ($LASTEXITCODE -ne 0) {
+            # --latest=false: a store is not a release of Filer. GitHub marks the newest release «Latest» by default, and the
+            # launcher's update check and the previous-release smoke read releases/latest/download/... — a store as «Latest» 404s both.
             gh release create $tag --repo ${{ github.repository }} `
-              --title 'UI runtime store' `
+              --title 'UI runtime store' --latest=false `
               --notes 'Permanent, append-only store of pinned Electron runtime layers. One asset per Electron bump, named by content-addressed runtime id. Never delete an asset here: manifests in the field and offline installer seeds reference them by URL forever.'
             if ($LASTEXITCODE -ne 0) { throw "failed to create the $tag release" }
           }

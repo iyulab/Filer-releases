@@ -644,6 +644,9 @@ jobs:
             launcher ${{ needs.version.outputs.launcher_version }})
           body: ${{ needs.changelog.outputs.body }}
           files: release-artifacts/*
+          # Filer's release is always «Latest»: installs read releases/latest/download/latest-v2.json, so no other release
+          # in this repository (the runtime stores) may hold that mark.
+          make_latest: true
 
       # Every artifact the build jobs upload, once the release carries them. filer-setup-offline was missing
       # from this list from the day it was added (8f555d8), so each published release left a ~360 MB copy for a
