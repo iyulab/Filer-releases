@@ -1,0 +1,105 @@
+name: Tauri UI Build
+
+# Builds the Tauri window as a launcher ui slot: the renderer, the shell in release with the renderer embedded, and the slot
+# descriptor (scripts/build-tauri-ui.ps1 in the app repository is the one definition of the slot — this workflow calls it).
+# The shell executable is signed before upload. Not yet wired into release.yml: until the swap release, a run is a manual
+# check of the slot build on a chosen ref.
+
+on:
+  workflow_call:
+    inputs:
+      source-ref:
+        required: false
+        type: string
+        default: ''
+    secrets:
+      RELEASE_TOKEN:
+        required: true
+  workflow_dispatch:
+    inputs:
+      source-ref:
+        description: Ref of the app repository to build
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: build-tauri-${{ inputs.source-ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Package the Tauri ui slot
+    # Windows only: the slot is a Windows executable on WebView2, and signing runs on the Windows runner.
+    runs-on: windows-latest
+    environment: production
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: iyulab/Filer
+          token: ${{ secrets.RELEASE_TOKEN }}
+          ref: ${{ inputs.source-ref || '' }}
+          submodules: recursive
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/ui/package-lock.json
+
+      - name: Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - name: Cargo cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src/shell/target/
+          key: ${{ runner.os }}-cargo-shell-${{ hashFiles('src/shell/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-shell-
+
+      - name: Install renderer dependencies
+        working-directory: src/ui
+        run: npm ci
+
+      - name: Build the slot
+        shell: pwsh
+        run: ./scripts/build-tauri-ui.ps1 -Out dist/tauri-ui
+
+      - name: Sign the shell executable
+        # Pinned to a specific commit SHA in iyulab/code-sign for supply-chain
+        # safety; bump intentionally when the action is updated.
+        uses: iyulab/code-sign@c4c68c25295ce0010a396d54cdb017fd248c5cce
+        with:
+          files: ${{ github.workspace }}/dist/tauri-ui/Filer.exe
+
+      - name: Check the slot
+        shell: pwsh
+        run: |
+          $descriptor = Get-Content dist/tauri-ui/filer-ui.json -Raw | ConvertFrom-Json
+          if ($descriptor.kind -ne 'tauri') { throw "the slot descriptor says kind '$($descriptor.kind)'" }
+          foreach ($file in $descriptor.required) {
+            if (-not (Test-Path (Join-Path dist/tauri-ui $file))) { throw "the slot lacks $file" }
+          }
+          $signature = Get-AuthenticodeSignature dist/tauri-ui/Filer.exe
+          if ($signature.Status -ne 'Valid') { throw "Filer.exe is not validly signed ($($signature.Status))" }
+          Write-Host "slot ok: $($descriptor.required -join ', '), signed by $($signature.SignerCertificate.Subject)"
+
+      - name: Upload the slot
+        uses: actions/upload-artifact@v7
+        with:
+          name: filer-ui-tauri-win-x64
+          path: dist/tauri-ui/
+          retention-days: 1
