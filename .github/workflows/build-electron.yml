@@ -145,6 +145,21 @@ jobs:
           # upstream and accepted by SmartScreen / Smart App Control.
           files: ${{ github.workspace }}/src/ui/dist/win-unpacked/Filer.exe
 
+      # The launcher checks every file of this component against a signed catalog at its root (filer-component.cat, written by
+      # the app repository's scripts/ci/write-component-catalog.ps1 and signed here like the programs). A tag from before the
+      # script releases without one, as it did.
+      - name: Write the component catalog
+        if: inputs.os == 'windows-latest'
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: if (Test-Path scripts/ci/write-component-catalog.ps1) { ./scripts/ci/write-component-catalog.ps1 -Dir 'src/ui/dist/win-unpacked' }
+
+      - name: Sign the component catalog
+        if: inputs.os == 'windows-latest' && hashFiles('src/ui/dist/win-unpacked/filer-component.cat') != ''
+        uses: iyulab/code-sign@c4c68c25295ce0010a396d54cdb017fd248c5cce
+        with:
+          files: ${{ github.workspace }}/src/ui/dist/win-unpacked/filer-component.cat
+
       - name: Upload Electron unpacked
         uses: actions/upload-artifact@v7
         with:

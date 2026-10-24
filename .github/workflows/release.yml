@@ -199,6 +199,20 @@ jobs:
         with:
           files: ${{ github.workspace }}/publish/Filer-setup.exe
 
+      # The launcher checks every file of this component against a signed catalog at its root (filer-component.cat, written by
+      # the app repository's scripts/ci/write-component-catalog.ps1 and signed here like the programs). A tag from before the
+      # script releases without one, as it did.
+      - name: Write the component catalog
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: if (Test-Path scripts/ci/write-component-catalog.ps1) { ./scripts/ci/write-component-catalog.ps1 -Dir 'publish/launcher' }
+
+      - name: Sign the component catalog
+        if: hashFiles('publish/launcher/filer-component.cat') != ''
+        uses: iyulab/code-sign@c4c68c25295ce0010a396d54cdb017fd248c5cce
+        with:
+          files: ${{ github.workspace }}/publish/launcher/filer-component.cat
+
       - uses: actions/upload-artifact@v7
         with:
           name: filer-launcher-win-x64

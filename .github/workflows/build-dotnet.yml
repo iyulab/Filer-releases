@@ -160,6 +160,21 @@ jobs:
           # composite-action uses: steps inherit the job-level working-directory.
           files: ${{ github.workspace }}/publish-output/*.exe
 
+      # The launcher checks every file of this component against a signed catalog at its root (filer-component.cat, written by
+      # the app repository's scripts/ci/write-component-catalog.ps1 and signed here like the programs). A tag from before the
+      # script releases without one, as it did.
+      - name: Write the component catalog
+        if: inputs.publish-project != '' && inputs.runtime == 'win-x64'
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: if (Test-Path scripts/ci/write-component-catalog.ps1) { ./scripts/ci/write-component-catalog.ps1 -Dir 'publish-output' }
+
+      - name: Sign the component catalog
+        if: inputs.publish-project != '' && inputs.runtime == 'win-x64' && hashFiles('publish-output/filer-component.cat') != ''
+        uses: iyulab/code-sign@c4c68c25295ce0010a396d54cdb017fd248c5cce
+        with:
+          files: ${{ github.workspace }}/publish-output/filer-component.cat
+
       - name: Upload artifact
         if: inputs.publish-project != ''
         uses: actions/upload-artifact@v7

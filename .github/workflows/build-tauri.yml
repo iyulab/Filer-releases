@@ -97,6 +97,20 @@ jobs:
           if ($signature.Status -ne 'Valid') { throw "Filer.exe is not validly signed ($($signature.Status))" }
           Write-Host "slot ok: $($descriptor.required -join ', '), signed by $($signature.SignerCertificate.Subject)"
 
+      # The launcher checks every file of this component against a signed catalog at its root (filer-component.cat, written by
+      # the app repository's scripts/ci/write-component-catalog.ps1 and signed here like the programs). A tag from before the
+      # script releases without one, as it did.
+      - name: Write the component catalog
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: if (Test-Path scripts/ci/write-component-catalog.ps1) { ./scripts/ci/write-component-catalog.ps1 -Dir 'dist/tauri-ui' }
+
+      - name: Sign the component catalog
+        if: hashFiles('dist/tauri-ui/filer-component.cat') != ''
+        uses: iyulab/code-sign@c4c68c25295ce0010a396d54cdb017fd248c5cce
+        with:
+          files: ${{ github.workspace }}/dist/tauri-ui/filer-component.cat
+
       - name: Upload the slot
         uses: actions/upload-artifact@v7
         with:
