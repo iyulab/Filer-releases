@@ -27,6 +27,7 @@ jobs:
       host_version: ${{ steps.check.outputs.host_version }}
       ai_version: ${{ steps.check.outputs.ai_version }}
       launcher_version: ${{ steps.check.outputs.launcher_version }}
+      ui_shell: ${{ steps.check.outputs.ui_shell }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -53,7 +54,13 @@ jobs:
           echo "ai_version=${AI_VERSION}" >> "$GITHUB_OUTPUT"
           echo "launcher_version=${LAUNCHER_VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "Component versions: ui=${UI_VERSION}, host=${HOST_VERSION}, ai=${AI_VERSION}, launcher=${LAUNCHER_VERSION}"
+          # Which window this tag releases: scripts/ui-shell.txt in the app repository at the tag (absent = electron). Versioned
+          # with the code, so a re-run of an old tag releases what it released then. Flipping it to tauri is the swap release.
+          UI_SHELL=electron
+          if [ -f scripts/ui-shell.txt ]; then UI_SHELL=$(tr -d '[:space:]' < scripts/ui-shell.txt); fi
+          case "${UI_SHELL}" in electron|tauri) ;; *) echo "scripts/ui-shell.txt names '${UI_SHELL}' -- electron or tauri"; exit 1 ;; esac
+          echo "ui_shell=${UI_SHELL}" >> "$GITHUB_OUTPUT"
+          echo "Component versions: ui=${UI_VERSION} (${UI_SHELL}), host=${HOST_VERSION}, ai=${AI_VERSION}, launcher=${LAUNCHER_VERSION}"
 
           if git rev-parse "${TAG}" >/dev/null 2>&1; then
             echo "Tag ${TAG} already exists, skipping release"
@@ -207,7 +214,7 @@ jobs:
   build-ui:
     name: Build filer-ui (Windows)
     needs: version
-    if: needs.version.outputs.released == 'true'
+    if: needs.version.outputs.released == 'true' && needs.version.outputs.ui_shell == 'electron'
     uses: ./.github/workflows/build-electron.yml
     with:
       source-ref: ${{ needs.version.outputs.tag }}
@@ -217,12 +224,26 @@ jobs:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       AI_CONNECTION_STRING: ${{ secrets.AI_CONNECTION_STRING }}
 
+  # The Tauri window as the ui slot (signed Filer.exe + filer-ui.json) -- the release's ui when scripts/ui-shell.txt says tauri.
+  build-ui-tauri:
+    name: Build filer-ui (Tauri, Windows)
+    needs: version
+    if: needs.version.outputs.released == 'true' && needs.version.outputs.ui_shell == 'tauri'
+    uses: ./.github/workflows/build-tauri.yml
+    with:
+      source-ref: ${{ needs.version.outputs.tag }}
+    secrets:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+
   build-store-installer:
     name: Build offline installer (Microsoft Store)
     # Must run after ui/host/ai/launcher are built and signed: the offline payload embeds their
     # published output directly, so this cannot be folded into build-launcher.
-    needs: [version, build-ui, build-host, build-ai, build-launcher]
-    if: needs.version.outputs.released == 'true'
+    # One of the two ui jobs is always skipped (the tag's ui-shell.txt picks one); a skipped need would skip this job too.
+    needs: [version, build-ui, build-ui-tauri, build-host, build-ai, build-launcher]
+    if: >-
+      needs.version.outputs.released == 'true' && !cancelled() && !contains(needs.*.result, 'failure') &&
+      (needs.build-ui.result == 'success' || needs.build-ui-tauri.result == 'success')
     runs-on: windows-latest
     # Signing uses an OIDC federated credential, which requires the 'production' environment.
     # No job-level `permissions:` block: release.yml already grants id-token: write at the
@@ -248,6 +269,7 @@ jobs:
       # diverge. src/ui/electron-runtime.lock.json is the single source for where it lives.
       - name: Read the pinned runtime lock
         id: lock
+        if: needs.version.outputs.ui_shell == 'electron'
         shell: pwsh
         run: |
           $lock = Get-Content src/ui/electron-runtime.lock.json -Raw | ConvertFrom-Json
@@ -266,6 +288,7 @@ jobs:
           Write-Host "Pinned runtime $($lock.runtimeId) (electron $($lock.electronVersion))"
 
       - name: Fetch and verify the pinned runtime layer
+        if: needs.version.outputs.ui_shell == 'electron'
         shell: pwsh
         run: |
           $zip = "$env:RUNNER_TEMP/ui-runtime.zip"
@@ -286,6 +309,7 @@ jobs:
       # section 2 deprecation window is open, so the app layer is carved out here. The split is
       # exactly: app layer = resources/app.asar at that path, and nothing else.
       - name: Carve the app layer
+        if: needs.version.outputs.ui_shell == 'electron'
         shell: pwsh
         run: |
           $src = 'artifacts/electron-dist-win/resources/app.asar'
@@ -316,19 +340,21 @@ jobs:
           "args=-NodeRuntimeSource node-runtime -NodeRuntimeId $($lock.runtimeId)" | Out-File $env:GITHUB_OUTPUT -Append
 
       # Both -UiSource and -UiRuntimeSource accept a plain directory (Expand-Source), so the
-      # carved trees and the expanded runtime go straight through with no re-zipping.
+      # carved trees and the expanded runtime go straight through with no re-zipping. A Tauri slot is complete on its own
+      # (filer-ui.json): no runtime layer, no carve. WebView2 is not bundled -- the launcher refuses a slot on a machine
+      # without it and keeps the ui that runs.
       - name: Assemble seed payload
         shell: pwsh
         env:
+          UI_SHELL: ${{ needs.version.outputs.ui_shell }}
           UI_VERSION: ${{ needs.version.outputs.version }}
           HOST_VERSION: ${{ needs.version.outputs.host_version }}
           AI_VERSION: ${{ needs.version.outputs.ai_version }}
           LAUNCHER_VERSION: ${{ needs.version.outputs.launcher_version }}
         run: |
-          pwsh -File scripts/build-offline-payload.ps1 `
-            -UiSource ui-app `
-            -UiRuntimeSource ui-runtime `
-            -UiRuntimeId "${{ steps.lock.outputs.id }}" `
+          $ui = if ($env:UI_SHELL -eq 'tauri') { @('-UiSource', 'artifacts/filer-ui-tauri-win-x64') }
+                else { @('-UiSource', 'ui-app', '-UiRuntimeSource', 'ui-runtime', '-UiRuntimeId', '${{ steps.lock.outputs.id }}') }
+          pwsh -File scripts/build-offline-payload.ps1 @ui `
             -HostSource artifacts/filer-host-win-x64 `
             -AiSource artifacts/filer-ai-win-x64 `
             -UiVersion "$env:UI_VERSION" `
@@ -472,8 +498,10 @@ jobs:
     # it back. Every other gate runs unpackaged; the v0.5.1/v0.5.2 brick (a UI that quit on its
     # first start after an update) passed all of them. Script and evidence rules live in
     # iyulab/Filer: scripts/ci/post-update-smoke.ps1.
-    needs: [version, build-ui, build-host, build-ai, build-launcher]
-    if: needs.version.outputs.released == 'true'
+    needs: [version, build-ui, build-ui-tauri, build-host, build-ai, build-launcher]
+    if: >-
+      needs.version.outputs.released == 'true' && !cancelled() && !contains(needs.*.result, 'failure') &&
+      (needs.build-ui.result == 'success' || needs.build-ui-tauri.result == 'success')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -500,6 +528,7 @@ jobs:
           HOST_VERSION: ${{ needs.version.outputs.host_version }}
           AI_VERSION: ${{ needs.version.outputs.ai_version }}
           LAUNCHER_VERSION: ${{ needs.version.outputs.launcher_version }}
+          UI_SHELL: ${{ needs.version.outputs.ui_shell }}
         run: |
           # SHELL-TAURI T5: once src/host/node-runtime.lock.json exists the release names the Node runtime layer (publish below),
           # so the smoke offers that same layer — fetched from the lock's URL and checked against its sha256 — and asserts the
@@ -518,12 +547,15 @@ jobs:
             $nodeArgs = @('-NodeLayerZip', $layerZip, '-UiDoubleDir', (Resolve-Path 'ui-double').Path)
             Write-Host "Node runtime layer $($lock.runtimeId) in the smoke"
           }
+          # The swap release's candidate ui is the Tauri slot: the smoke's update phase is then Electron -> Tauri. Passed only for
+          # tauri, so a re-run of a tag whose smoke predates the parameter still runs.
+          $candidateArgs = if ($env:UI_SHELL -eq 'tauri') { @('-CandidateUi', 'tauri') } else { @() }
           pwsh -NoProfile -File scripts/ci/post-update-smoke.ps1 `
             -ArtifactsDir artifacts `
             -UiVersion "$env:UI_VERSION" `
             -HostVersion "$env:HOST_VERSION" `
             -AiVersion "$env:AI_VERSION" `
-            -LauncherVersion "$env:LAUNCHER_VERSION" @nodeArgs
+            -LauncherVersion "$env:LAUNCHER_VERSION" @nodeArgs @candidateArgs
           if ($LASTEXITCODE -ne 0) { throw "post-update smoke failed with exit code $LASTEXITCODE" }
 
       - name: Keep the launcher and UI logs when the smoke fails
@@ -541,7 +573,11 @@ jobs:
     name: Publish release
     # All build-* jobs already sign their binaries via the iyulab/code-sign
     # composite action, so this job only needs to package and publish.
-    needs: [version, changelog, build-ui, build-host, build-ai, build-launcher, smoke-post-update]
+    needs: [version, changelog, build-ui, build-ui-tauri, build-host, build-ai, build-launcher, smoke-post-update]
+    if: >-
+      needs.version.outputs.released == 'true' && !cancelled() && !contains(needs.*.result, 'failure') &&
+      (needs.build-ui.result == 'success' || needs.build-ui-tauri.result == 'success') &&
+      needs.smoke-post-update.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -567,11 +603,14 @@ jobs:
           AI_VERSION: ${{ needs.version.outputs.ai_version }}
           LAUNCHER_VERSION: ${{ needs.version.outputs.launcher_version }}
           TAG: ${{ needs.version.outputs.tag }}
+          UI_SHELL: ${{ needs.version.outputs.ui_shell }}
         run: |
           mkdir -p release-artifacts
           cp artifacts/filer-setup/Filer-setup.exe release-artifacts/
 
-          cd artifacts/electron-dist-win && zip -r ../../release-artifacts/filer-ui-win-x64.zip . && cd ../..
+          # The ui zip is whichever window the tag releases; its name stays, so every launcher reads it the same way.
+          if [ "${UI_SHELL}" = tauri ]; then UI_DIR=artifacts/filer-ui-tauri-win-x64; else UI_DIR=artifacts/electron-dist-win; fi
+          (cd "${UI_DIR}" && zip -r "${GITHUB_WORKSPACE}/release-artifacts/filer-ui-win-x64.zip" .)
           # SHELL-TAURI T5: the host carries the plugin runtime; a host zip without it would leave a Node-layer install with no
           # plugins (the launcher falls back to the Electron ui's copy only while one is installed).
           test -f artifacts/filer-host-win-x64/plugin-runtime/plugin-sidecar.js || { echo "host artifact carries no plugin-runtime/plugin-sidecar.js"; exit 1; }
@@ -658,6 +697,7 @@ jobs:
         with:
           name: |
             electron-dist-win
+            filer-ui-tauri-win-x64
             filer-host-win-x64
             filer-ai-win-x64
             filer-launcher-win-x64
