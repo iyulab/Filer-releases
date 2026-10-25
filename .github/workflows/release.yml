@@ -412,6 +412,31 @@ jobs:
           path: publish/Filer-setup-offline.exe
           retention-days: 1
 
+      # The signed installer is installed on this runner before anything is published: silent install, two starts from its
+      # own seed (the window says ready over the launcher pipe, the host answers), a quiet uninstall that keeps only the
+      # user's files. Nothing else ever installs it — the post-update smoke starts from the web installer, which downloads.
+      # The runner is online, so «no download needed» is proven by the sandbox run before the tag
+      # (scripts/sandbox-offline-install-smoke.ps1, networking off); here it is the signed bytes the Store gets.
+      - name: Install the offline installer (smoke)
+        shell: pwsh
+        timeout-minutes: 20
+        env:
+          UI_SHELL: ${{ needs.version.outputs.ui_shell }}
+        run: |
+          # A tag cut before the smoke existed releases as it did then.
+          if (-not (Test-Path scripts/ci/offline-install-smoke.ps1)) { Write-Host '::notice::no offline-install smoke at this tag'; return }
+          pwsh -File scripts/ci/offline-install-smoke.ps1 -Installer publish/Filer-setup-offline.exe -ExpectUi $env:UI_SHELL `
+            -OutDir "$env:RUNNER_TEMP/offline-install-smoke"
+          if ($LASTEXITCODE -ne 0) { throw "the offline installer smoke failed ($LASTEXITCODE)" }
+
+      - name: Upload the offline installer smoke's logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: offline-install-smoke
+          path: ${{ runner.temp }}/offline-install-smoke
+          retention-days: 3
+
       # Pinned rather than taken from the runner image: this step gates a release, and the
       # image's Python moves without notice.
       - name: Set up Python
