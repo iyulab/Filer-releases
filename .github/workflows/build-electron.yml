@@ -165,4 +165,7 @@ jobs:
         with:
           name: electron-dist-${{ inputs.os == 'windows-latest' && 'win' || 'mac' }}
           path: src/ui/dist/win-unpacked/
+          # The catalog lists every file, dotfiles included (wwwroot/.gitkeep): upload-artifact leaves hidden files out by default,
+          # and a zip made from the downloaded artifact then fails the launcher's own check against the catalog.
+          include-hidden-files: true
           retention-days: 1

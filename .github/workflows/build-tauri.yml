@@ -116,4 +116,7 @@ jobs:
         with:
           name: filer-ui-tauri-win-x64
           path: dist/tauri-ui/
+          # The catalog lists every file, dotfiles included (wwwroot/.gitkeep): upload-artifact leaves hidden files out by default,
+          # and a zip made from the downloaded artifact then fails the launcher's own check against the catalog.
+          include-hidden-files: true
           retention-days: 1
