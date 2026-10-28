@@ -1,9 +1,9 @@
 name: Diagnose host test foreground threads
 
-# Manual only. The Release workflow's Windows host test run ends with xunit.v3's "Foreground threads were left running"
-# after every test passed; it does not reproduce on a developer machine. This runs FilerAI.Mcp.Tests alone on the same
-# runner image and takes managed stack snapshots of the test process until it exits, so the thread that outlives the tests
-# is named. Nothing here builds, signs or publishes anything.
+# Manual only. The Release workflow's Windows host test run ends with xunit.v3's "Foreground threads were left running" after
+# every test passed; it does not reproduce on a developer machine, and neither the telemetry tests nor everything else
+# reproduces it alone. This runs FilerAI.Mcp.Tests on the same runner image in slices to find which combination does.
+# Nothing here builds a release, signs or publishes anything.
 
 on:
   workflow_dispatch:
@@ -18,10 +18,23 @@ permissions:
   contents: read
 
 jobs:
-  diagnose:
-    name: Stacks of the test host
+  slice:
+    name: ${{ matrix.name }}
     runs-on: windows-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: telemetry plus endpoints
+            filter: '(FullyQualifiedName~.Telemetry.|FullyQualifiedName~.Endpoints.)&FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack'
+            extra: ''
+          - name: telemetry plus everything but endpoints
+            filter: '(FullyQualifiedName~.Telemetry.|FullyQualifiedName!~.Endpoints.)&FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack'
+            extra: ''
+          - name: everything one test at a time
+            filter: 'FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack'
+            extra: '-- --parallel none'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -37,29 +50,6 @@ jobs:
         working-directory: src/host
         run: dotnet build FilerAI.Host.slnx
 
-      - name: Telemetry tests alone
-        id: telemetry
-        continue-on-error: true
+      - name: Test
         working-directory: src/host
-        run: dotnet test tests/FilerAI.Mcp.Tests/FilerAI.Mcp.Tests.csproj --no-build --filter "FullyQualifiedName~Telemetry&FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack"
-
-      - name: Everything except telemetry tests
-        id: rest
-        continue-on-error: true
-        working-directory: src/host
-        run: dotnet test tests/FilerAI.Mcp.Tests/FilerAI.Mcp.Tests.csproj --no-build --filter "FullyQualifiedName!~Telemetry&FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack"
-
-      - name: Verdict
-        shell: pwsh
-        run: |
-          "telemetry tests alone : ${{ steps.telemetry.outcome }}"
-          "everything but them   : ${{ steps.rest.outcome }}"
-
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: host-thread-diagnosis
-          path: ${{ runner.temp }}/diag
-          if-no-files-found: ignore
-          retention-days: 3
-          include-hidden-files: true
+        run: dotnet test tests/FilerAI.Mcp.Tests/FilerAI.Mcp.Tests.csproj --no-build --filter "${{ matrix.filter }}" ${{ matrix.extra }}
