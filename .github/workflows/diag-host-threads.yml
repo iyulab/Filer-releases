@@ -26,15 +26,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: telemetry plus endpoints
-            filter: '(FullyQualifiedName~.Telemetry.|FullyQualifiedName~.Endpoints.)&FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack'
-            extra: ''
-          - name: telemetry plus everything but endpoints
-            filter: '(FullyQualifiedName~.Telemetry.|FullyQualifiedName!~.Endpoints.)&FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack'
-            extra: ''
-          - name: everything one test at a time
+          - name: full run, unchanged (control)
             filter: 'FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack'
-            extra: '-- --parallel none'
+            otel: ''
+          - name: full run, OpenTelemetry SDK disabled
+            filter: 'FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack'
+            otel: 'true'
+          - name: full run without the Application Insights writer tests
+            filter: 'FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack&FullyQualifiedName!~AppInsightsEnvelopeTests'
+            otel: ''
     steps:
       - uses: actions/checkout@v6
         with:
@@ -52,4 +52,6 @@ jobs:
 
       - name: Test
         working-directory: src/host
-        run: dotnet test tests/FilerAI.Mcp.Tests/FilerAI.Mcp.Tests.csproj --no-build --filter "${{ matrix.filter }}" ${{ matrix.extra }}
+        env:
+          OTEL_SDK_DISABLED: ${{ matrix.otel }}
+        run: dotnet test tests/FilerAI.Mcp.Tests/FilerAI.Mcp.Tests.csproj --no-build --filter "${{ matrix.filter }}"
