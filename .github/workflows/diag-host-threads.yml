@@ -1,0 +1,79 @@
+name: Diagnose host test foreground threads
+
+# Manual only. The Release workflow's Windows host test run ends with xunit.v3's "Foreground threads were left running"
+# after every test passed; it does not reproduce on a developer machine. This runs FilerAI.Mcp.Tests alone on the same
+# runner image and takes managed stack snapshots of the test process until it exits, so the thread that outlives the tests
+# is named. Nothing here builds, signs or publishes anything.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source-ref:
+        description: 'iyulab/Filer ref to test (blank = default branch)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Stacks of the test host
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: iyulab/Filer
+          token: ${{ secrets.RELEASE_TOKEN }}
+          ref: ${{ inputs.source-ref || '' }}
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install dotnet-stack
+        run: dotnet tool install --global dotnet-stack
+
+      - name: Build
+        working-directory: src/host
+        run: dotnet build FilerAI.Host.slnx
+
+      - name: Test with stack snapshots
+        working-directory: src/host
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'diag'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $log = Join-Path $out 'test.log'
+          $p = Start-Process dotnet -PassThru -NoNewWindow -RedirectStandardOutput $log -RedirectStandardError (Join-Path $out 'test.err') `
+            -ArgumentList 'test','tests/FilerAI.Mcp.Tests/FilerAI.Mcp.Tests.csproj','--no-build','--filter','FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack'
+          $n = 0
+          while (-not $p.HasExited) {
+            Start-Sleep -Seconds 4
+            $target = Get-CimInstance Win32_Process | Where-Object {
+              $_.CommandLine -match 'FilerAI\.Mcp\.Tests' -and $_.CommandLine -notmatch '\btest\b.*--no-build' -and $_.Name -ne 'pwsh.exe'
+            } | Select-Object -First 1
+            if (-not $target) { continue }
+            $n++
+            $file = Join-Path $out ("stack-{0:D4}.txt" -f $n)
+            "pid=$($target.ProcessId) name=$($target.Name) at $(Get-Date -Format o)" | Out-File $file
+            & dotnet-stack report -p $target.ProcessId 2>&1 | Out-File $file -Append
+          }
+          "test exit code: $($p.ExitCode); snapshots: $n"
+          Get-Content (Join-Path $out 'test.err') -ErrorAction SilentlyContinue | Select-Object -Last 5
+          Select-String -Path $log -Pattern 'Foreground threads','Test run summary','total:','failed:' | ForEach-Object { $_.Line }
+          # The snapshots nearest the end are the ones that matter: the process is still alive for the foreground-thread wait.
+          Get-ChildItem $out -Filter 'stack-*.txt' | Sort-Object Name | Select-Object -Last 3 | ForEach-Object {
+            "===== $($_.Name)"
+            Get-Content $_.FullName | Select-Object -First 400
+          }
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: host-thread-diagnosis
+          path: ${{ runner.temp }}/diag
+          retention-days: 3
+          include-hidden-files: true
