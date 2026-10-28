@@ -19,14 +19,14 @@ permissions:
 
 jobs:
   slice:
-    name: otel=${{ matrix.otel || 'on' }} rep ${{ matrix.rep }}
+    name: ${{ matrix.mode }} rep ${{ matrix.rep }}
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        otel: ['', 'true']
-        rep: [1, 2, 3]
+        mode: [as-release, one-assembly-at-a-time]
+        rep: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -42,23 +42,17 @@ jobs:
         working-directory: src/host
         run: dotnet build FilerAI.Host.slnx
 
-      - name: Test, first run
-        id: first
+      - name: Test the whole solution
+        id: test
         continue-on-error: true
         working-directory: src/host
-        env:
-          OTEL_SDK_DISABLED: ${{ matrix.otel }}
-        run: dotnet test tests/FilerAI.Mcp.Tests/FilerAI.Mcp.Tests.csproj --no-build --filter "FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack"
-
-      - name: Test, second run
-        id: second
-        continue-on-error: true
-        working-directory: src/host
-        env:
-          OTEL_SDK_DISABLED: ${{ matrix.otel }}
-        run: dotnet test tests/FilerAI.Mcp.Tests/FilerAI.Mcp.Tests.csproj --no-build --filter "FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack"
+        shell: bash
+        run: |
+          extra=""
+          if [ "${{ matrix.mode }}" = "one-assembly-at-a-time" ]; then extra="--max-parallel-test-modules 1"; fi
+          dotnet test FilerAI.Host.slnx --no-build --filter "FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack" $extra
 
       - name: Verdict
         shell: pwsh
         run: |
-          "RESULT otel=${{ matrix.otel || 'on' }} rep=${{ matrix.rep }} first=${{ steps.first.outcome }} second=${{ steps.second.outcome }}"
+          "RESULT mode=${{ matrix.mode }} rep=${{ matrix.rep }} test=${{ steps.test.outcome }}"
