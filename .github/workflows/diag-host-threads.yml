@@ -21,7 +21,7 @@ jobs:
   diagnose:
     name: Stacks of the test host
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
         with:
@@ -33,47 +33,33 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Install dotnet-stack
-        run: dotnet tool install --global dotnet-stack
-
       - name: Build
         working-directory: src/host
         run: dotnet build FilerAI.Host.slnx
 
-      - name: Test with stack snapshots
+      - name: Telemetry tests alone
+        id: telemetry
+        continue-on-error: true
         working-directory: src/host
+        run: dotnet test tests/FilerAI.Mcp.Tests/FilerAI.Mcp.Tests.csproj --no-build --filter "FullyQualifiedName~Telemetry&FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack"
+
+      - name: Everything except telemetry tests
+        id: rest
+        continue-on-error: true
+        working-directory: src/host
+        run: dotnet test tests/FilerAI.Mcp.Tests/FilerAI.Mcp.Tests.csproj --no-build --filter "FullyQualifiedName!~Telemetry&FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack"
+
+      - name: Verdict
         shell: pwsh
         run: |
-          $out = Join-Path $env:RUNNER_TEMP 'diag'
-          New-Item -ItemType Directory -Force $out | Out-Null
-          $log = Join-Path $out 'test.log'
-          $p = Start-Process dotnet -PassThru -NoNewWindow -RedirectStandardOutput $log -RedirectStandardError (Join-Path $out 'test.err') `
-            -ArgumentList 'test','tests/FilerAI.Mcp.Tests/FilerAI.Mcp.Tests.csproj','--no-build','--filter','FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack'
-          $n = 0
-          while (-not $p.HasExited) {
-            Start-Sleep -Seconds 4
-            $target = Get-CimInstance Win32_Process | Where-Object {
-              $_.CommandLine -match 'FilerAI\.Mcp\.Tests' -and $_.CommandLine -notmatch '\btest\b.*--no-build' -and $_.Name -ne 'pwsh.exe'
-            } | Select-Object -First 1
-            if (-not $target) { continue }
-            $n++
-            $file = Join-Path $out ("stack-{0:D4}.txt" -f $n)
-            "pid=$($target.ProcessId) name=$($target.Name) at $(Get-Date -Format o)" | Out-File $file
-            & dotnet-stack report -p $target.ProcessId 2>&1 | Out-File $file -Append
-          }
-          "test exit code: $($p.ExitCode); snapshots: $n"
-          Get-Content (Join-Path $out 'test.err') -ErrorAction SilentlyContinue | Select-Object -Last 5
-          Select-String -Path $log -Pattern 'Foreground threads','Test run summary','total:','failed:' | ForEach-Object { $_.Line }
-          # The snapshots nearest the end are the ones that matter: the process is still alive for the foreground-thread wait.
-          Get-ChildItem $out -Filter 'stack-*.txt' | Sort-Object Name | Select-Object -Last 3 | ForEach-Object {
-            "===== $($_.Name)"
-            Get-Content $_.FullName | Select-Object -First 400
-          }
+          "telemetry tests alone : ${{ steps.telemetry.outcome }}"
+          "everything but them   : ${{ steps.rest.outcome }}"
 
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: host-thread-diagnosis
           path: ${{ runner.temp }}/diag
+          if-no-files-found: ignore
           retention-days: 3
           include-hidden-files: true
