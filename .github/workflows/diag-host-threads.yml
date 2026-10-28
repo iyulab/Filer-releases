@@ -19,22 +19,14 @@ permissions:
 
 jobs:
   slice:
-    name: ${{ matrix.name }}
+    name: otel=${{ matrix.otel || 'on' }} rep ${{ matrix.rep }}
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: full run, unchanged (control)
-            filter: 'FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack'
-            otel: ''
-          - name: full run, OpenTelemetry SDK disabled
-            filter: 'FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack'
-            otel: 'true'
-          - name: full run without the Application Insights writer tests
-            filter: 'FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack&FullyQualifiedName!~AppInsightsEnvelopeTests'
-            otel: ''
+        otel: ['', 'true']
+        rep: [1, 2, 3]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -50,8 +42,23 @@ jobs:
         working-directory: src/host
         run: dotnet build FilerAI.Host.slnx
 
-      - name: Test
+      - name: Test, first run
+        id: first
+        continue-on-error: true
         working-directory: src/host
         env:
           OTEL_SDK_DISABLED: ${{ matrix.otel }}
-        run: dotnet test tests/FilerAI.Mcp.Tests/FilerAI.Mcp.Tests.csproj --no-build --filter "${{ matrix.filter }}"
+        run: dotnet test tests/FilerAI.Mcp.Tests/FilerAI.Mcp.Tests.csproj --no-build --filter "FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack"
+
+      - name: Test, second run
+        id: second
+        continue-on-error: true
+        working-directory: src/host
+        env:
+          OTEL_SDK_DISABLED: ${{ matrix.otel }}
+        run: dotnet test tests/FilerAI.Mcp.Tests/FilerAI.Mcp.Tests.csproj --no-build --filter "FullyQualifiedName!~Live&FullyQualifiedName!~GPUStack"
+
+      - name: Verdict
+        shell: pwsh
+        run: |
+          "RESULT otel=${{ matrix.otel || 'on' }} rep=${{ matrix.rep }} first=${{ steps.first.outcome }} second=${{ steps.second.outcome }}"
