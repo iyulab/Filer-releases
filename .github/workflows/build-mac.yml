@@ -1,0 +1,121 @@
+name: macOS bundle build
+
+# Builds Filer.app for Apple silicon with no credential and hands it, as an artifact, to the organization's signing Mac
+# (iyulab/tauri-release `macos-signed.yml` -> the private signing repository: it signs every program inside with the Developer ID,
+# notarizes, makes the disk image `Filer_<version>_aarch64.dmg` and the update archive `Filer_<version>_aarch64.app.tar.gz`, and
+# attaches them to the draft release). scripts/build-mac-bundle.ps1 in the app repository is the one definition of the bundle —
+# this workflow calls it; the layout and the signing rules it keeps are scripts/check-mac-bundle.ps1's (docs/DECISIONS.md
+# «2026-10-31 (M4)»).
+#
+# Not yet wired into release.yml: the Mac artifact rides the held App release (the owner's named go), and the signing wiring is the
+# owner's (an entry in the signing repository's apps.json, the release bot installed here). Until then a run is a manual check of the
+# bundle build on a chosen ref — it uploads the artifact and signs nothing.
+#
+# The artifact holds, at its root, what the signing layer reads:
+#   Filer.app.tar            the bundle, ad hoc signed (the layer re-signs every program inside), no Finder metadata
+#   entitlements/nested/     <executable name>.entitlements — `allow-jit` for the three .NET programs and nothing else
+
+on:
+  workflow_call:
+    inputs:
+      source-ref:
+        required: false
+        type: string
+        default: ''
+    outputs:
+      version:
+        description: The ui version the bundle carries (src/ui/package.json), e.g. 0.21.0.
+        value: ${{ jobs.build.outputs.version }}
+    secrets:
+      RELEASE_TOKEN:
+        required: true
+  workflow_dispatch:
+    inputs:
+      source-ref:
+        description: Ref of the app repository to build
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-mac-${{ inputs.source-ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build the macOS bundle
+    # An Apple-silicon runner: the build script refuses any other machine, and the bundle is arm64 only.
+    runs-on: macos-latest
+    environment: production
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: iyulab/Filer
+          token: ${{ secrets.RELEASE_TOKEN }}
+          ref: ${{ inputs.source-ref || '' }}
+          submodules: recursive
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/ui/package-lock.json
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - name: Cargo cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src/shell/target/
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-shell-${{ hashFiles('src/shell/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-shell-
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/Directory.Packages.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Install renderer dependencies
+        working-directory: src/ui
+        run: npm ci
+
+      - name: Build the bundle (ad hoc signed, the signing layer's input)
+        shell: pwsh
+        run: ./scripts/build-mac-bundle.ps1 -Package
+
+      - id: version
+        name: Read the version
+        shell: pwsh
+        run: |
+          $version = (Get-Content src/ui/package.json -Raw | ConvertFrom-Json).version
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "bundle version $version"
+
+      - name: Upload the bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-bundle
+          path: dist/mac/artifact/
+          if-no-files-found: error
+          retention-days: 1
