@@ -1,0 +1,105 @@
+name: macOS release
+
+# The Mac half of a release (Apple silicon), after its Windows publish: build the bundle with no credential, have the organization's
+# signing Mac sign and notarize it and attach Filer_<v>_aarch64.dmg, Filer_<v>_aarch64.app.tar.gz and Filer-aarch64.dmg to the
+# published release, then add the `app` component to its latest-v2.json. release.yml calls it once the Windows release is out;
+# run by hand (workflow_dispatch) it does the same for an already published tag whose Mac chain did not run or failed.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The published release tag, v<ui version>.
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The published release tag, v<ui version> (e.g. v0.23.0).
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    name: The tag is a published release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Refuse a tag that is not a published release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          case "${TAG}" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "'${TAG}' is not v<major>.<minor>.<patch>" >&2; exit 1 ;; esac
+          draft=$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq .isDraft)
+          [ "${draft}" = false ] || { echo "${TAG} is a draft, not a published release" >&2; exit 1; }
+
+  build-mac:
+    name: macOS bundle
+    needs: [check]
+    uses: ./.github/workflows/build-mac.yml
+    secrets: inherit
+    with:
+      source-ref: ${{ inputs.tag }}
+
+  macos-sign:
+    name: macOS sign and notarize
+    needs: [build-mac]
+    uses: iyulab/tauri-release/.github/workflows/macos-signed.yml@28f0a5f02fe3409e97b2d9f7faab923e2c25faab # unreleased
+    permissions: {}
+    secrets: inherit                      # RELEASE_BOT_PRIVATE_KEY (organization secret)
+    with:
+      version: ${{ needs.build-mac.outputs.version }}
+
+  manifest-mac:
+    name: macOS update manifest
+    needs: [build-mac, macos-sign]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Add the app component to latest-v2.json
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          VERSION: ${{ needs.build-mac.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The tag is v<ui version> and the bundle carries the ui version: a mismatch means the bundle is not this release's.
+          [ "${TAG}" = "v${VERSION}" ] || { echo "bundle version ${VERSION} does not match release tag ${TAG}" >&2; exit 1; }
+          ARCHIVE="Filer_${VERSION}_aarch64.app.tar.gz"
+          mkdir -p mac && cd mac
+          gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" --pattern "${ARCHIVE}" --pattern latest-v2.json
+          test -s "${ARCHIVE}" || { echo "${ARCHIVE} is not on the release" >&2; exit 1; }
+          SHA=$(sha256sum "${ARCHIVE}" | cut -d' ' -f1)
+          SIZE=$(stat -c%s "${ARCHIVE}")
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ARCHIVE}"
+          node -e "
+          const fs = require('fs');
+          const m = JSON.parse(fs.readFileSync('latest-v2.json', 'utf8'));
+          if (m.manifestVersion !== 2) { console.error('latest-v2.json is manifestVersion ' + m.manifestVersion); process.exit(1); }
+          m.app = { version: '${VERSION}', artifacts: { 'darwin-aarch64': { url: '${URL}', sha256: '${SHA}', size: ${SIZE} } } };
+          fs.writeFileSync('latest-v2.json', JSON.stringify(m, null, 2));
+          "
+          gh release upload "${TAG}" latest-v2.json --repo "${GITHUB_REPOSITORY}" --clobber
+          # Read it back from the release: the field must be there, and only it was added.
+          gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" --pattern latest-v2.json --dir check --clobber
+          node -e "
+          const m = JSON.parse(require('fs').readFileSync('check/latest-v2.json', 'utf8'));
+          const a = m.app && m.app.artifacts && m.app.artifacts['darwin-aarch64'];
+          if (!a || a.sha256 !== '${SHA}' || a.size !== ${SIZE} || !m.launcher || !m.ui || !m.host || !m.ai) { console.error('latest-v2.json does not read back as expected'); process.exit(1); }
+          console.log('latest-v2.json carries app ${VERSION} (' + a.size + ' bytes)');
+          "

@@ -7,7 +7,8 @@ name: macOS bundle build
 # this workflow calls it; the layout and the signing rules it keeps are scripts/check-mac-bundle.ps1's (docs/DECISIONS.md
 # «2026-10-31 (M4)»).
 #
-# Called by release.yml after the Windows publish (job `build-mac`, then `macos-sign`, then `manifest-mac`). The signing wiring is
+# Called by release-mac.yml (from release.yml after the Windows publish, or by hand for a published tag): `build-mac`, then
+# `macos-sign`, then `manifest-mac`. The signing wiring is
 # the owner's: an entry in the signing repository's apps.json and the release bot installed here. Run by hand
 # (`workflow_dispatch`) on a chosen ref it is a check of the bundle build only — it uploads the artifact and signs nothing.
 #
