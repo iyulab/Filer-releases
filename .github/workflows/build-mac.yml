@@ -30,6 +30,8 @@ on:
     secrets:
       RELEASE_TOKEN:
         required: true
+      AI_CONNECTION_STRING:
+        required: false
   workflow_dispatch:
     inputs:
       source-ref:
@@ -103,6 +105,10 @@ jobs:
 
       - name: Build the bundle (ad hoc signed, the signing layer's input)
         shell: pwsh
+        # filer-host stamps the Application Insights connection string, as build-dotnet.yml's Publish step does for Windows; without it
+        # every Mac install sends no usage events and no crash reports. The script never prints it. Absent on a hand-run bundle check.
+        env:
+          FILER_TELEMETRY_CONNECTION_STRING: ${{ secrets.AI_CONNECTION_STRING }}
         run: ./scripts/build-mac-bundle.ps1 -Package
 
       - id: version
