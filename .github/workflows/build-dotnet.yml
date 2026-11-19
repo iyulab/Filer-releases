@@ -101,6 +101,7 @@ jobs:
 
       - name: Publish
         if: inputs.publish-project != ''
+        # The projects own their publish shape (ReadyToRun, not compressed) in their .csproj — a -p here would override it.
         # filer-host is the Application Insights emitter: it stamps the connection string into its assembly from the
         # FilerTelemetryConnectionString property (a project that does not declare it ignores it). MSBuild reads ';' in a -p
         # value as the next property, so the string's separators travel escaped as %3B — unescaped, only the
@@ -122,7 +123,6 @@ jobs:
             --self-contained true \
             -p:PublishSingleFile=true \
             -p:IncludeNativeLibrariesForSelfExtract=true \
-            -p:EnableCompressionInSingleFile=true \
             -o publish-output \
             "${extra[@]}"
         working-directory: .
